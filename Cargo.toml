@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 cga2d = { git = "https://github.com/HactarCE/cga2d", branch = "main" }
+eframe = "0.28.1"
