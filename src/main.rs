@@ -47,7 +47,7 @@ impl App {
 
         let mirrors = rank_4_mirrors(8, 3, 3);
         Self {
-            scale: 0.5,
+            scale: 0.1,
             mirrors,
         }
     }
@@ -121,6 +121,60 @@ impl eframe::App for App {
                         );
                     }
                 };
+            }
+
+            let egui_to_geom = |pos: Pos2| {
+                let Pos { x, y } = egui_to_screen(pos);
+                cga2d::point(x, y)
+            };
+            let geom_to_egui = |pos: cga2d::Blade1| {
+                let (x, y) = pos.unpack_point();
+                screen_to_egui(Pos { x, y })
+            };
+
+            if r.is_pointer_button_down_on() {
+                if let Some(mpos) = ctx.pointer_latest_pos() {
+                    //let mpos = itrans(mpos);
+                    let mut seed = egui_to_geom(mpos);
+                    // let seed = Pos::new(seed.x as f64, -seed.y as f64);
+
+                    // Fill regions
+                    if ui.input(|i| i.pointer.primary_down()) {
+                        ui.painter()
+                            .circle_filled(geom_to_egui(seed), 5., egui::Color32::GRAY);
+                        for (i, &mirror) in self.mirrors.iter().enumerate() {
+                            if !(mirror ^ seed) < 0. {
+                                ui.painter().circle_filled(
+                                    geom_to_egui(mirror.sandwich(seed)),
+                                    5.,
+                                    cols[i],
+                                );
+                            }
+                        }
+                        for _ in 0..100 {
+                            let mut done = true;
+                            for (i, &mirror) in self.mirrors.iter().enumerate() {
+                                if !(mirror ^ seed) < 0. {
+                                    let new_seed = mirror.sandwich(seed);
+                                    ui.painter().line_segment(
+                                        [geom_to_egui(seed), geom_to_egui(new_seed)],
+                                        (3., cols[i]),
+                                    );
+                                    ui.painter().circle_filled(
+                                        geom_to_egui(new_seed),
+                                        5.,
+                                        egui::Color32::LIGHT_GRAY,
+                                    );
+                                    seed = new_seed;
+                                    done = false;
+                                }
+                            }
+                            if done {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         });
     }
