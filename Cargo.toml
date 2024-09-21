@@ -1,0 +1,7 @@
+[package]
+name = "discrete"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cga2d = { git = "https://github.com/HactarCE/cga2d", branch = "main" }
