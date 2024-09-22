@@ -25,10 +25,14 @@ fn rank_3_mirrors_internal(a1: f64, a2: f64) -> [Blade3; 3] {
     // this is kind of magic? u is symmetric with the desired mirror3
     let q3 = (x_unit << mirror1) ^ !mirror2;
     let u = (mirror2 & q3).rotate(a2) ^ x_unit;
-    // let vertex_2_3 = (u & mirror1).unpack_point_pair().expect("what")[1];
-    let mirror3 = mirror1.connect(u & mirror1);
-    // let mirror3 = dbg!(!mirror1) ^ dbg!(x_unit) ^ dbg!(vertex_2_3);
-    [mirror1, mirror2, mirror3]
+    let vertex_2_3 = (u & mirror2).unpack_point_pair().expect("what")[0];
+    let mirror3 = !mirror1 ^ x_unit ^ vertex_2_3;
+    // let mirror3 = mirror1.connect(u & mirror2);
+    [
+        mirror1.normalize(),
+        mirror2.normalize(),
+        mirror3.normalize(),
+    ]
 }
 
 fn rank_4_last_mirror_internal(
@@ -44,5 +48,5 @@ fn rank_4_last_mirror_internal(
     let temp_line = cga2d::slerp(mirror1, !mutual_perpendicular ^ !mirror1 ^ NO, -temp_angle);
     let vertex_3_4 = (temp_line & mirror3).unpack_point_pair().expect("what")[1];
     let mirror4 = !mirror1 ^ !mirror2 ^ vertex_3_4;
-    mirror4
+    mirror4.normalize()
 }
