@@ -123,7 +123,7 @@ impl eframe::App for App {
 
                 let egui_to_geom = |pos: Pos2| {
                     let Pos { x, y } = egui_to_screen(pos);
-                    self.camera_transform.sandwich(cga2d::point(x, y))
+                    self.camera_transform.rev().sandwich(cga2d::point(x, y))
                     // cga2d::point(x, y)
                 };
                 let geom_to_egui = |pos: cga2d::Blade1| {
