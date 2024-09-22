@@ -211,7 +211,21 @@ impl eframe::App for App {
                             let root_pos = egui_to_geom(mpos - r.drag_delta());
                             let end_pos = egui_to_geom(mpos);
 
-                            let boundary = !self.mirrors[0] ^ !self.mirrors[1] ^ !self.mirrors[2]; // the boundary to fix when transforming space
+                            let boundary = self.camera_transform.sandwich(
+                                if ctx.input(|i| i.modifiers.ctrl) {
+                                    !self.mirrors[1]
+                                        ^ !self.mirrors[2]
+                                        ^ if self.settings.rank == 4 {
+                                            !self.mirrors[3]
+                                        } else {
+                                            !(!self.mirrors[0]
+                                                ^ !self.mirrors[1]
+                                                ^ !self.mirrors[2])
+                                        }
+                                } else {
+                                    !self.mirrors[0] ^ !self.mirrors[1] ^ !self.mirrors[2]
+                                },
+                            ); // the boundary to fix when transforming space
 
                             let init_refl = !(root_pos ^ end_pos) ^ !boundary; // get root_pos to end_pos
                             let f = end_pos ^ !boundary;
@@ -258,16 +272,17 @@ impl eframe::App for App {
                 image.paint_at(ui, egui_rect);
                 // ui.put(egui_rect, image);
 
-                ui.painter().circle_filled(
-                    screen_to_egui(Pos { x: 1., y: 0. }),
-                    5.,
-                    egui::Color32::GOLD,
-                );
-                ui.painter().circle_filled(
-                    screen_to_egui(Pos { x: 0., y: 1. }),
-                    5.,
-                    egui::Color32::GOLD,
-                );
+                // debug dots
+                // ui.painter().circle_filled(
+                //     screen_to_egui(Pos { x: 1., y: 0. }),
+                //     5.,
+                //     egui::Color32::GOLD,
+                // );
+                // ui.painter().circle_filled(
+                //     screen_to_egui(Pos { x: 0., y: 1. }),
+                //     5.,
+                //     egui::Color32::GOLD,
+                // );
 
                 let cols = [
                     egui::Color32::RED,
