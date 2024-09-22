@@ -1,5 +1,8 @@
-use cga2d::Multivector;
-use eframe::egui::{self, pos2, vec2, Frame, Pos2};
+use cga2d::{Blade, Multivector};
+use eframe::{
+    egui::{self, pos2, vec2, Color32, Frame, Pos2},
+    epaint::PathShape,
+};
 use geom::{rank_3_mirrors, rank_4_mirrors};
 use gfx::GfxData;
 use todd_coxeter::Tables;
@@ -68,6 +71,7 @@ impl eframe::App for App {
                 let rect = ui.available_rect_before_wrap();
                 let (cen, size) = (rect.center(), rect.size());
                 let mut unit = size.min_elem() / (2. * self.scale);
+                let boundary_circle = cga2d::circle(cga2d::NO, (size.max_elem() / unit) as f64);
 
                 // Allocate space in the UI.
                 let (egui_rect, target_size) =
@@ -116,7 +120,6 @@ impl eframe::App for App {
 
                             self.camera_transform =
                                 (final_refl * init_refl * self.camera_transform).normalize();
-                            println!("{}", self.camera_transform);
                         }
                     }
                 }
@@ -180,31 +183,43 @@ impl eframe::App for App {
                     .map(|&m| self.camera_transform.sandwich(m))
                     .enumerate()
                 {
-                    match mirror.unpack(0.0000001) {
-                        cga2d::LineOrCircle::Line { .. } => {
-                            let pp = mirror & cga2d::circle(cga2d::NO, 2. * unit as f64);
-                            if pp.mag2() > 0. {
-                                ui.painter().line_segment(
-                                    if let Some(pp) = pp.unpack_point_pair() {
-                                        pp.map(|p| {
-                                            let (x, y) = p.unpack_point();
-                                            screen_to_egui(Pos { x, y })
-                                        })
-                                    } else {
-                                        todo!()
-                                    },
+                    // Find the point pair where the mirror intersects the visible region.
+                    let pp = mirror & boundary_circle;
+                    if let Some(_) = pp.unpack_point_pair() {
+                        let mid = pp.sandwich(cga2d::NI);
+                        let perpendicular_pp = pp.connect(mid) & mirror;
+
+                        // Sample points uniformly along the mirror.
+                        const CURVE_SAMPLE_COUNT: usize = 200;
+                        let points = (0..=CURVE_SAMPLE_COUNT)
+                            .filter_map(|i| {
+                                // Interpolate along a straight line.
+                                let t = i as f64 / CURVE_SAMPLE_COUNT as f64;
+                                let [sample_point, _] =
+                                    cga2d::slerp(pp, perpendicular_pp, t * std::f64::consts::PI)
+                                        .unpack_point_pair()?;
+                                Some(sample_point.unpack_point())
+                            })
+                            .map(|(x, y)| screen_to_egui(Pos { x, y }))
+                            .collect();
+                        ui.painter().add(PathShape {
+                            points,
+                            closed: false,
+                            fill: Color32::TRANSPARENT,
+                            stroke: (stroke_width, cols[i]).into(),
+                        });
+                    } else {
+                        match mirror.unpack(0.001) {
+                            cga2d::LineOrCircle::Line { .. } => (), // does not intersect view
+                            cga2d::LineOrCircle::Circle { cx, cy, r } => {
+                                ui.painter().circle_stroke(
+                                    screen_to_egui(Pos::new(cx, cy)),
+                                    (r * unit as f64) as _,
                                     (stroke_width, cols[i]),
                                 );
                             }
                         }
-                        cga2d::LineOrCircle::Circle { cx, cy, r } => {
-                            ui.painter().circle_stroke(
-                                screen_to_egui(Pos::new(cx, cy)),
-                                (r * unit as f64) as _,
-                                (stroke_width, cols[i]),
-                            );
-                        }
-                    };
+                    }
                 }
 
                 if r.is_pointer_button_down_on() {
