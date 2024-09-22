@@ -89,7 +89,7 @@ impl GfxData {
                 buffers: &[VertexBufferLayout {
                     array_stride: 32,
                     step_mode: eframe::wgpu::VertexStepMode::Vertex,
-                    attributes: &vertex_attr_array![0 => Float32x2, u32::MAX => Float32x2, 1 => Float32x4],
+                    attributes: &vertex_attr_array![0 => Float32x2, 10 => Float32x2, 1 => Float32x4],
                 }],
             },
             primitive: PrimitiveState {
