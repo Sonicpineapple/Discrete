@@ -9,6 +9,15 @@ pub(crate) fn rank_3_mirrors(a: usize, b: usize) -> Option<[Blade3; 3]> {
 }
 
 pub(crate) fn rank_4_mirrors(a: usize, b: usize, c: usize) -> Option<[Blade3; 4]> {
+    let p1 = cga2d::point(1.0, 0.0);
+    let p2 = cga2d::point(0.0, 1.0);
+
+    let m1 = -NO ^ NI ^ p1;
+    let m2 = (NO << m1) ^ p2;
+    let m3 = (p2 << m2) ^ !m1;
+    let m4 = (m1 & m3).unpack_point_pair()?[0] ^ !m2 ^ !m1;
+    return Some([m1, m2, m3, m4]);
+
     let a1 = f64::consts::PI / a as f64;
     let a2 = f64::consts::PI / b as f64;
     let a3 = f64::consts::PI / c as f64;
