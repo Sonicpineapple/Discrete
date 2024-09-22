@@ -414,6 +414,9 @@ impl eframe::App for App {
                                 ui.label("Iteration Depth");
                             });
                             ui.checkbox(&mut self.settings.fundamental, "Draw fundamental region");
+                            if ui.button("Reset Camera").clicked() {
+                                self.camera_transform = cga2d::Rotor::ident();
+                            }
                             if changed {
                                 if let Some(mirrors) = self.settings.get_mirrors() {
                                     self.mirrors = mirrors;
