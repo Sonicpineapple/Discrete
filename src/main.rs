@@ -1,6 +1,6 @@
 use cga2d::{Blade, Multivector};
 use eframe::{
-    egui::{self, pos2, vec2, Color32, Frame, Pos2},
+    egui::{self, pos2, vec2, CollapsingHeader, Color32, Frame, Pos2, Shadow, Slider},
     epaint::PathShape,
 };
 use geom::{rank_3_mirrors, rank_4_mirrors};
@@ -24,9 +24,40 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+struct Schlafli(Vec<usize>);
+impl Schlafli {
+    fn new(rank: u8) -> Self {
+        match rank {
+            3 => Self(vec![7, 3]),
+            4 => Self(vec![7, 3, 3]),
+            _ => todo!(),
+        }
+    }
+}
+
+struct Settings {
+    rank: u8,
+    values: Schlafli,
+}
+impl Settings {
+    fn new(rank: u8) -> Self {
+        let values = Schlafli::new(rank);
+        Self { rank, values }
+    }
+    fn get_mirrors(&self) -> Option<Vec<cga2d::Blade3>> {
+        Some(match self.rank {
+            3 => rank_3_mirrors(self.values.0[0], self.values.0[1])?.to_vec(),
+            4 => rank_4_mirrors(self.values.0[0], self.values.0[1], self.values.0[2])?.to_vec(),
+            _ => todo!(),
+        })
+    }
+}
+
 struct App {
     scale: f32,
-    mirrors: [cga2d::Blade3; 4],
+    settings: Settings,
+    mirrors: Vec<cga2d::Blade3>,
+    // mirrors: [cga2d::Blade3; 4],
     gfx_data: GfxData,
     camera_transform: cga2d::Rotor,
 }
@@ -34,29 +65,32 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let gfx_data = GfxData::new(cc);
 
-        let gen_count = 4;
-
         // mirrors are assumed self-inverse
         // let mut rels = schlafli_rels(vec![7, 3]);
         // rels.push((0..8).flat_map(|_| [0, 2, 1]).collect());
-        let mut rels = schlafli_rels(vec![8, 3, 3]);
-        rels.push((0..2).flat_map(|_| [0, 2, 1, 0, 2, 1, 0, 1]).collect());
 
-        let subgroup = vec![0, 1]; // generators are assumed mirrors
+        // let mut rels = schlafli_rels(vec![8, 3, 3]);
+        // rels.push((0..2).flat_map(|_| [0, 2, 1, 0, 2, 1, 0, 1]).collect());
 
-        let mut tables = Tables::new(gen_count, &rels, &subgroup);
-        loop {
-            if !tables.discover_next_unknown() {
-                println!("Done");
-                break;
-            }
-        }
+        // let subgroup = vec![0, 1]; // generators are assumed mirrors
 
-        print!("{}", tables.coset_group());
+        // let mut tables = Tables::new(rank, &rels, &subgroup);
+        // loop {
+        //     if !tables.discover_next_unknown() {
+        //         println!("Done");
+        //         break;
+        //     }
+        // }
 
-        let mirrors = rank_4_mirrors(8, 3, 3);
+        // print!("{}", tables.coset_group());
+
+        let settings = Settings::new(4);
+
+        let mirrors = settings.get_mirrors().expect("Hardcoded");
+
         Self {
             scale: 1.,
+            settings,
             mirrors,
             gfx_data,
             camera_transform: cga2d::Rotor::ident(),
@@ -76,7 +110,17 @@ impl eframe::App for App {
                 // Allocate space in the UI.
                 let (egui_rect, target_size) =
                     rounded_pixel_rect(ui, ui.available_rect_before_wrap(), 1);
-                let r = ui.allocate_rect(egui_rect, egui::Sense::click_and_drag());
+
+                let image = egui::widgets::Image::from_texture((
+                    self.gfx_data.texture_id,
+                    vec2(100., 100.),
+                ));
+
+                let r = ui.interact(
+                    egui_rect,
+                    eframe::egui::Id::new("Drawing"),
+                    egui::Sense::click_and_drag(),
+                );
 
                 if r.hovered() {
                     let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y / unit);
@@ -85,7 +129,6 @@ impl eframe::App for App {
                         unit = size.min_elem() / (2. * self.scale);
                     }
                 }
-
                 let scale = egui_rect.size() / (1. * egui_rect.size().min_elem());
                 let scale = [scale.x * self.scale, scale.y * self.scale];
 
@@ -152,10 +195,6 @@ impl eframe::App for App {
                     target_size[0],
                     target_size[1],
                 );
-                let image = egui::widgets::Image::from_texture((
-                    self.gfx_data.texture_id,
-                    vec2(100., 100.),
-                ));
                 image.paint_at(ui, egui_rect);
                 // ui.put(egui_rect, image);
 
@@ -266,6 +305,39 @@ impl eframe::App for App {
                         }
                     }
                 }
+                Frame::popup(ui.style())
+                    .outer_margin(10.)
+                    .shadow(Shadow::NONE)
+                    // .stroke(Stroke::NONE)
+                    .show(ui, |ui| {
+                        CollapsingHeader::new("Settings").show(ui, |ui| {
+                            let mut changed = false;
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(Slider::new(&mut self.settings.rank, 3..=4))
+                                    .changed()
+                                {
+                                    self.settings.values = Schlafli::new(self.settings.rank);
+                                    changed = true;
+                                };
+                                ui.label("Rank");
+                            });
+                            for (i, val) in self.settings.values.0.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    if ui.add(Slider::new(val, 3..=10)).changed() {
+                                        changed = true;
+                                    };
+                                    ui.label(["A", "B", "C"][i]);
+                                });
+                            }
+                            if changed {
+                                if let Some(mirrors) = self.settings.get_mirrors() {
+                                    self.mirrors = mirrors;
+                                    ctx.request_repaint();
+                                }
+                            }
+                        })
+                    });
             });
     }
 }
