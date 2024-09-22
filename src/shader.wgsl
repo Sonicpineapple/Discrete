@@ -2,8 +2,12 @@
 
 struct Params {
     mirrors: mat4x4<f32>,
+    edges: vec4<u32>,
     point: vec4<f32>,
     scale: vec2<f32>,
+    col_scale: f32,
+    depth: u32,
+    fundamental: u32,
     mirror_count: u32,
 }
 
@@ -65,7 +69,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var q = params.point;
 
     var k = 0;
-    for (var i: i32 = 0; i < 50; i++) {
+    for (var i: u32 = 0u; i < params.depth; i++) {
         var done = true;
         for (var j: u32 = 0u; j < params.mirror_count; j++) {
             if !in_circle(params.mirrors[j],p) {
@@ -79,7 +83,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    if k == 0 {
+    if params.fundamental > 0 && k == 0 {
         return vec4(0.5,0.5,0.5,1.);
     }
 
@@ -92,7 +96,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     //     min(how_in_circle(params.mirrors[2],p),
     //     how_in_circle(params.mirrors[3],p)
     //     ))),0.,0.5);
-    return turbo(how_in_circle(params.mirrors[2],p),0.,1.);
+    var dist = params.col_scale;
+    for (var i = 0u; i < params.mirror_count; i++) {
+        if params.edges[i] > 0u {
+            dist = min(dist,how_in_circle(params.mirrors[i],p));
+        }
+    }
+    return turbo(dist,0.,params.col_scale);
 
     // let a = reflect(params.mirrors[0],q);
     // let b = reflect(params.mirrors[1],a);

@@ -86,11 +86,22 @@ impl Schlafli {
 struct Settings {
     rank: u8,
     values: Schlafli,
+    edges: Vec<bool>,
+    col_scale: f32,
+    depth: u32,
+    fundamental: bool,
 }
 impl Settings {
     fn new(rank: u8) -> Self {
         let values = Schlafli::new(rank);
-        Self { rank, values }
+        Self {
+            rank,
+            values,
+            edges: vec![false, false, true, false],
+            col_scale: 1.,
+            depth: 50,
+            fundamental: true,
+        }
     }
     fn get_mirrors(&self) -> Option<Vec<cga2d::Blade3>> {
         Some(match self.rank {
@@ -192,9 +203,6 @@ impl eframe::App for App {
 
                 if r.dragged_by(egui::PointerButton::Secondary) {
                     if r.drag_delta().length() > 0.1 {
-                        let drag = r.drag_delta() / unit;
-                        let drag = Pos::new(drag.x as f64, -drag.y as f64);
-
                         if let Some(mpos) = r.interact_pointer_pos() {
                             let egui_to_geom = |pos: Pos2| {
                                 let Pos { x, y } = egui_to_screen(pos);
@@ -232,12 +240,16 @@ impl eframe::App for App {
                             .iter()
                             .map(|&m| self.camera_transform.sandwich(m))
                             .collect(),
+                        self.settings.edges.clone(),
                         if let Some(mpos) = ctx.pointer_latest_pos() {
                             egui_to_geom(mpos)
                         } else {
                             cga2d::point(0., 1.)
                         },
                         scale,
+                        self.settings.col_scale,
+                        self.settings.depth,
+                        self.settings.fundamental,
                         // self.camera_transform,
                     ),
                     target_size[0],
@@ -378,6 +390,30 @@ impl eframe::App for App {
                                     ui.label(["A", "B", "C"][i]);
                                 });
                             }
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.;
+                                for (i, val) in self.settings.edges.iter_mut().enumerate() {
+                                    ui.checkbox(val, "");
+                                    if i < (self.settings.rank as usize - 1) {
+                                        ui.label(self.settings.values.0[i].to_string());
+                                    }
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    Slider::new(&mut self.settings.col_scale, 0.1..=2.0)
+                                        .logarithmic(true),
+                                );
+                                ui.label("Colour Scale");
+                            });
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    Slider::new(&mut self.settings.depth, 1..=100)
+                                        .logarithmic(true),
+                                );
+                                ui.label("Iteration Depth");
+                            });
+                            ui.checkbox(&mut self.settings.fundamental, "Draw fundamental region");
                             if changed {
                                 if let Some(mirrors) = self.settings.get_mirrors() {
                                     self.mirrors = mirrors;

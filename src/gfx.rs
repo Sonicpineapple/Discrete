@@ -230,23 +230,38 @@ impl VertexInput {
 #[repr(C)]
 pub(crate) struct Params {
     pub mirrors: [[f32; 4]; 4],
+    pub edges: [u32; 4],
     pub point: [f32; 4],
     pub scale: [f32; 2],
+    pub col_scale: f32,
+    pub depth: u32,
+    pub fundamental: u32,
     pub mirror_count: u32,
-    pub padding: u32,
+    padding: [f32; 2],
 }
 impl Params {
-    pub fn new(mirrors: Vec<cga2d::Blade3>, point: cga2d::Blade1, scale: [f32; 2]) -> Self {
+    pub fn new(
+        mirrors: Vec<cga2d::Blade3>,
+        edges: Vec<bool>,
+        point: cga2d::Blade1,
+        scale: [f32; 2],
+        col_scale: f32,
+        depth: u32,
+        fundamental: bool,
+    ) -> Self {
         let mirror_count = mirrors.len() as u32;
 
         let mut out_mirrors = [[0.; 4]; 4];
+        let mut out_edges = [0; 4];
 
         for (i, &mirror) in mirrors.iter().enumerate() {
             out_mirrors[i] = rep_mirror(mirror);
+            out_edges[i] = edges[i].into();
         }
 
         Self {
             mirrors: out_mirrors,
+            edges: out_edges,
             point: [
                 point.m as f32,
                 point.p as f32,
@@ -254,8 +269,11 @@ impl Params {
                 point.y as f32,
             ],
             scale,
+            col_scale,
+            depth,
+            fundamental: if fundamental { 1 } else { 0 },
             mirror_count,
-            padding: 0,
+            padding: [0.; 2],
         }
     }
 }
