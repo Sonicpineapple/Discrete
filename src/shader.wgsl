@@ -1,4 +1,5 @@
 @group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage,read> puzzle: array<u32>;
 
 struct Params {
     mirrors: mat4x4<f32>,
@@ -8,6 +9,8 @@ struct Params {
     col_scale: f32,
     depth: u32,
     fundamental: u32,
+    col_tiles: u32,
+    inverse_col: u32,
     mirror_count: u32,
 }
 
@@ -68,12 +71,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var p = up(in.color.xy);
     var q = params.point;
 
+    var elem = 0u;
     var k = 0;
     for (var i: u32 = 0u; i < params.depth; i++) {
         var done = true;
         for (var j: u32 = 0u; j < params.mirror_count; j++) {
             if !in_circle(params.mirrors[j],p) {
                 p = reflect(params.mirrors[j],p);
+                elem = mul_elem_gen(elem,j);
                 done = false;
                 k += 1;
             }
@@ -87,31 +92,32 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4(0.5,0.5,0.5,1.);
     }
 
-    // return vec4(1.-,0.,0.,1.);
-
-    // return turbo(distance(down(q),down(p)),1.,0.);
-    // return turbo(
-    //     min(how_in_circle(params.mirrors[0],p),
-    //     min(how_in_circle(params.mirrors[1],p),
-    //     min(how_in_circle(params.mirrors[2],p),
-    //     how_in_circle(params.mirrors[3],p)
-    //     ))),0.,0.5);
-    var dist = params.col_scale;
-    for (var i = 0u; i < params.mirror_count; i++) {
-        if params.edges[i] > 0u {
-            dist = min(dist,how_in_circle(params.mirrors[i],p));
+    if params.col_tiles == 0 {
+        var dist = params.col_scale;
+        for (var i = 0u; i < params.mirror_count; i++) {
+            if params.edges[i] > 0u {
+                dist = min(dist,how_in_circle(params.mirrors[i],p));
+            }
         }
+        return turbo(dist,0.,params.col_scale);
     }
-    return turbo(dist,0.,params.col_scale);
 
-    // let a = reflect(params.mirrors[0],q);
-    // let b = reflect(params.mirrors[1],a);
-    // let c = reflect(params.mirrors[2],b);
-
-    // return vec4(1.-distance(down(a),p),1.-distance(down(b),p),1.-distance(down(c),p),1.);
+    if params.inverse_col > 0 {
+        elem = mul_elem_gen(elem,params.mirror_count-1);
+    }
+    return turbo(f32(get_col(elem)) / 50.,0.,params.col_scale);
+    // return turbo(f32(elem) / 20.,0.,params.col_scale);
 }
 
+/// Get the colour of where we started by inverting the element that gets us home
+fn get_col(elem: u32) -> u32 {
+    return puzzle[(params.mirror_count + 1) * elem];
+}
 
+/// Apply a generator to an element
+fn mul_elem_gen(elem: u32, gen: u32) -> u32 {
+    return puzzle[(params.mirror_count + 1) * elem + gen + 1];
+}
 
 fn turbo(value: f32, min: f32, max: f32) -> vec4<f32> {
     let kRedVec4: vec4<f32> = vec4(0.13572138, 4.61539260, -42.66032258, 132.13108234);

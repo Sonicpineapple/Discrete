@@ -4,11 +4,22 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-use crate::group::{Generator, Group, Point};
+use crate::group::{self, Generator, Group, Point, Word};
+
+pub(crate) fn get_element_table(gen_count: usize, rels: &Vec<Vec<u8>>) -> Group {
+    get_coset_table(gen_count, rels, &vec![])
+}
+
+pub(crate) fn get_coset_table(gen_count: usize, rels: &Vec<Vec<u8>>, subgroup: &Vec<u8>) -> Group {
+    let mut tables = Tables::new(gen_count, rels, subgroup);
+    while tables.discover_next_unknown() {}
+    tables.coset_group()
+}
 
 pub(crate) struct Tables {
     coset_table: CosetTable,
     relation_tables: Vec<RelationTable>,
+    word_table: WordTable,
     //subgroup_tables: Vec<Table>,
 }
 impl Tables {
@@ -17,6 +28,7 @@ impl Tables {
         let mut out = Self {
             coset_table: CosetTable::new(gen_count),
             relation_tables: rels.iter().map(|rel| RelationTable::new(rel)).collect(),
+            word_table: WordTable::new(),
             //subgroup_tables: subgroup.iter().map(|gen| Table::new(gen.len())).collect(),
         };
         for &sub_gen in subgroup {
@@ -55,6 +67,8 @@ impl Tables {
         };
         let (coset, generator) = self.coset_table.unpack_index(i);
         let result = self.add_row();
+        let new_word = self.word_table[coset].clone() * Generator(generator as u8);
+        self.word_table.push(new_word);
         self.deduce(coset, generator as u8, result);
         // for rel in &self.relation_tables {
         //     dbg!(rel);
@@ -78,17 +92,14 @@ impl Tables {
             let (coset, gen) = self.coset_table.unpack_index(i);
             mul_table.insert(
                 (Point(coset.0), Generator(gen as _)),
-                Point(
-                    self.coset_table[coset][gen]
-                        .expect("Attempted to get group for incomplete table")
-                        .0,
-                ),
+                Point(e.expect("Attempted to get group for incomplete table").0),
             );
         }
         Group::new(
             self.coset_table.row_count() as u16,
             self.coset_table.gen_count as u8,
             mul_table,
+            self.word_table.words.clone(),
         )
     }
 }
@@ -250,5 +261,33 @@ impl RelationTableRow {
     /// Whether this row is completely filled in.
     fn is_full(&self) -> bool {
         self.left_rel_index >= self.right_rel_index
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WordTable {
+    words: Vec<Word>,
+}
+impl WordTable {
+    fn new() -> Self {
+        Self {
+            words: vec![Word(vec![])],
+        }
+    }
+
+    fn push(&mut self, word: Word) {
+        self.words.push(word);
+    }
+}
+impl Index<CosetIndex> for WordTable {
+    type Output = Word;
+
+    fn index(&self, index: CosetIndex) -> &Self::Output {
+        &self.words[index.0 as usize]
+    }
+}
+impl IndexMut<CosetIndex> for WordTable {
+    fn index_mut(&mut self, index: CosetIndex) -> &mut Self::Output {
+        &mut self.words[index.0 as usize]
     }
 }

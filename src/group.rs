@@ -3,6 +3,9 @@ use std::{collections::HashMap, fmt, ops::Mul};
 /// Point acted on by the group.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Point(pub u16);
+impl Point {
+    pub const INIT: Self = Point(0);
+}
 
 /// Group generator.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
@@ -10,7 +13,12 @@ pub(crate) struct Generator(pub u8);
 
 /// Word in generators, applied left to right.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct Word(Vec<Generator>);
+pub(crate) struct Word(pub Vec<Generator>);
+impl Word {
+    pub fn inverse(&self) -> Word {
+        Word(self.0.iter().copied().rev().collect()) //TODO: Invert generators
+    }
+}
 impl Mul for Word {
     type Output = Self;
 
@@ -34,23 +42,35 @@ impl Mul<Generator> for Word {
         self * Word(vec![rhs])
     }
 }
+impl fmt::Display for Word {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for g in &self.0 {
+            write!(f, "{} ", g.0)?;
+        }
+        Ok(())
+    }
+}
 
 /// Permutation group multiplication table.
+#[derive(Debug, Clone)]
 pub(crate) struct Group {
     point_count: u16,
     generator_count: u8,
     mul_table: HashMap<(Point, Generator), Point>,
+    pub word_table: Vec<Word>,
 }
 impl Group {
     pub fn new(
         point_count: u16,
         generator_count: u8,
         mul_table: HashMap<(Point, Generator), Point>,
+        word_table: Vec<Word>,
     ) -> Self {
         Self {
             point_count,
             mul_table,
             generator_count,
+            word_table,
         }
     }
 
@@ -61,9 +81,17 @@ impl Group {
     pub fn mul_word(&self, point: Point, word: Word) -> Point {
         let mut result = point;
         for gen in word.0 {
-            result = self.mul_gen(point, gen);
+            result = self.mul_gen(result, gen);
         }
         result
+    }
+
+    pub fn point_count(&self) -> u16 {
+        self.point_count
+    }
+
+    pub fn generator_count(&self) -> u8 {
+        self.generator_count
     }
 }
 impl fmt::Display for Group {

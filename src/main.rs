@@ -1,11 +1,12 @@
 use cga2d::{Blade, Multivector};
 use eframe::{
-    egui::{self, pos2, vec2, CollapsingHeader, Color32, Frame, Pos2, Shadow, Slider},
+    egui::{self, pos2, vec2, CollapsingHeader, Color32, Frame, Modifiers, Pos2, Shadow, Slider},
     epaint::PathShape,
 };
 use geom::{rank_3_mirrors, rank_4_mirrors};
 use gfx::GfxData;
-use todd_coxeter::Tables;
+use group::{Generator, Group, Point, Word};
+use todd_coxeter::{get_coset_table, get_element_table, Tables};
 
 mod geom;
 mod gfx;
@@ -72,6 +73,14 @@ fn main() {
     });
 }
 
+#[derive(Debug, Clone)]
+struct PuzzleInfo {
+    element_group: Group,
+    coset_group: Group,
+    /// Map from a group element E to C0 * E' in the coset group
+    inverse_map: Vec<Point>,
+}
+
 struct Schlafli(Vec<usize>);
 impl Schlafli {
     fn new(rank: u8) -> Self {
@@ -81,26 +90,51 @@ impl Schlafli {
             _ => todo!(),
         }
     }
+
+    fn get_rels(&self) -> Vec<Vec<u8>> {
+        let mut rels = vec![];
+        for (i, &val) in self.0.iter().enumerate() {
+            for x in 0..i {
+                rels.push((0..2).flat_map(|_| [x as u8, i as u8 + 1]).collect());
+            }
+            rels.push((0..val).flat_map(|_| [i as u8, i as u8 + 1]).collect());
+        }
+        rels
+    }
 }
 
 struct Settings {
     rank: u8,
     values: Schlafli,
     edges: Vec<bool>,
+    relations: Vec<Vec<u8>>,
+    subgroup: Vec<u8>,
     col_scale: f32,
     depth: u32,
     fundamental: bool,
+    col_tiles: bool,
+    inverse_col: bool,
 }
 impl Settings {
     fn new(rank: u8) -> Self {
         let values = Schlafli::new(rank);
+        let mut relations = values.get_rels();
+        relations.extend([(0..8).flat_map(|_| [0, 2, 1]).collect()]);
+        // let mut rels = schlafli_rels(vec![8, 3, 3]);
+        // rels.push((0..2).flat_map(|_| [0, 2, 1, 0, 2, 1, 0, 1]).collect());
+        let subgroup = vec![0, 1];
+
         Self {
             rank,
             values,
             edges: vec![false, false, true, false],
+            relations,
+            subgroup,
             col_scale: 1.,
             depth: 50,
             fundamental: true,
+            col_tiles: false,
+            inverse_col: false,
         }
     }
     fn get_mirrors(&self) -> Option<Vec<cga2d::Blade3>> {
@@ -109,6 +143,23 @@ impl Settings {
             4 => rank_4_mirrors(self.values.0[0], self.values.0[1], self.values.0[2])?.to_vec(),
             _ => todo!(),
         })
+    }
+    fn get_puzzle_info(&self) -> PuzzleInfo {
+        let element_group = get_element_table(3, &self.relations);
+        let coset_group = get_coset_table(3, &self.relations, &self.subgroup);
+
+        // Inverse Element -> Coset
+        let inverse_map: Vec<Point> = element_group
+            .word_table
+            .iter()
+            .map(|word| coset_group.mul_word(Point::INIT, word.inverse()))
+            .collect();
+
+        PuzzleInfo {
+            element_group,
+            coset_group,
+            inverse_map,
+        }
     }
 }
 
@@ -119,33 +170,17 @@ struct App {
     // mirrors: [cga2d::Blade3; 4],
     gfx_data: GfxData,
     camera_transform: cga2d::Rotor,
+    puzzle_info: PuzzleInfo,
+    needs_regenerate: bool,
 }
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let gfx_data = GfxData::new(cc);
 
-        // mirrors are assumed self-inverse
-        // let mut rels = schlafli_rels(vec![7, 3]);
-        // rels.push((0..8).flat_map(|_| [0, 2, 1]).collect());
-
-        // let mut rels = schlafli_rels(vec![8, 3, 3]);
-        // rels.push((0..2).flat_map(|_| [0, 2, 1, 0, 2, 1, 0, 1]).collect());
-
-        // let subgroup = vec![0, 1]; // generators are assumed mirrors
-
-        // let mut tables = Tables::new(rank, &rels, &subgroup);
-        // loop {
-        //     if !tables.discover_next_unknown() {
-        //         println!("Done");
-        //         break;
-        //     }
-        // }
-
-        // print!("{}", tables.coset_group());
-
-        let settings = Settings::new(4);
+        let settings = Settings::new(3);
 
         let mirrors = settings.get_mirrors().expect("Hardcoded");
+        let puzzle_info = settings.get_puzzle_info();
 
         Self {
             scale: 1.,
@@ -153,6 +188,8 @@ impl App {
             mirrors,
             gfx_data,
             camera_transform: cga2d::Rotor::ident(),
+            puzzle_info,
+            needs_regenerate: true,
         }
     }
 }
@@ -211,21 +248,26 @@ impl eframe::App for App {
                             let root_pos = egui_to_geom(mpos - r.drag_delta());
                             let end_pos = egui_to_geom(mpos);
 
-                            let boundary = self.camera_transform.sandwich(
-                                if ctx.input(|i| i.modifiers.ctrl) {
-                                    !self.mirrors[1]
-                                        ^ !self.mirrors[2]
-                                        ^ if self.settings.rank == 4 {
-                                            !self.mirrors[3]
-                                        } else {
-                                            !(!self.mirrors[0]
-                                                ^ !self.mirrors[1]
-                                                ^ !self.mirrors[2])
-                                        }
-                                } else {
-                                    !self.mirrors[0] ^ !self.mirrors[1] ^ !self.mirrors[2]
-                                },
-                            ); // the boundary to fix when transforming space
+                            let modifiers = ctx.input(|i| i.modifiers);
+                            let boundary = match (modifiers.command, modifiers.alt) {
+                                (true, false) => {
+                                    let third = if self.settings.rank == 4 {
+                                        !self.mirrors[3]
+                                    } else {
+                                        !(!self.mirrors[0] ^ !self.mirrors[1] ^ !self.mirrors[2])
+                                    };
+                                    !self.mirrors[1] ^ !self.mirrors[2] ^ third
+                                }
+                                (false, true) => {
+                                    let third = if self.settings.rank == 4 {
+                                        !self.mirrors[3]
+                                    } else {
+                                        !(!self.mirrors[0] ^ !self.mirrors[1] ^ !self.mirrors[2])
+                                    };
+                                    !self.mirrors[0] ^ !self.mirrors[1] ^ third
+                                }
+                                _ => !self.mirrors[0] ^ !self.mirrors[1] ^ !self.mirrors[2],
+                            }; // the boundary to fix when transforming space
 
                             let init_refl = !(root_pos ^ end_pos) ^ !boundary; // get root_pos to end_pos
                             let f = end_pos ^ !boundary;
@@ -248,6 +290,10 @@ impl eframe::App for App {
                     screen_to_egui(Pos { x, y })
                 };
 
+                if self.needs_regenerate {
+                    self.gfx_data.regenerate_puzzle_buffer(&self.puzzle_info);
+                    self.needs_regenerate = false;
+                }
                 self.gfx_data.frame(
                     gfx::Params::new(
                         self.mirrors
@@ -264,7 +310,8 @@ impl eframe::App for App {
                         self.settings.col_scale,
                         self.settings.depth,
                         self.settings.fundamental,
-                        // self.camera_transform,
+                        self.settings.col_tiles,
+                        self.settings.inverse_col,
                     ),
                     target_size[0],
                     target_size[1],
@@ -429,12 +476,16 @@ impl eframe::App for App {
                                 ui.label("Iteration Depth");
                             });
                             ui.checkbox(&mut self.settings.fundamental, "Draw fundamental region");
+                            ui.checkbox(&mut self.settings.col_tiles, "Colour by quotient");
+                            ui.checkbox(&mut self.settings.inverse_col, "Colour by neighbours");
                             if ui.button("Reset Camera").clicked() {
                                 self.camera_transform = cga2d::Rotor::ident();
                             }
                             if changed {
                                 if let Some(mirrors) = self.settings.get_mirrors() {
                                     self.mirrors = mirrors;
+                                    self.puzzle_info = self.settings.get_puzzle_info();
+                                    self.needs_regenerate = true;
                                     ctx.request_repaint();
                                 }
                             }
@@ -461,17 +512,6 @@ impl From<Pos> for Pos2 {
             y: value.y as f32,
         }
     }
-}
-
-fn schlafli_rels(vals: Vec<u8>) -> Vec<Vec<u8>> {
-    let mut rels = vec![];
-    for (i, &val) in vals.iter().enumerate() {
-        for x in 0..i {
-            rels.push((0..2).flat_map(|_| [x as u8, i as u8 + 1]).collect());
-        }
-        rels.push((0..val).flat_map(|_| [i as u8, i as u8 + 1]).collect());
-    }
-    rels
 }
 
 /// Rounds an egui rectangle to the nearest pixel boundary and returns the
