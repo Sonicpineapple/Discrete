@@ -8,6 +8,7 @@ bytemuck = "1.18.0"
 cga2d = { version = "0.2.2", features = ["bytemuck"] }
 eframe = { version = "0.28.1", default-features = false, features = ["accesskit", "default_fonts", "wayland", "web_screen_reader", "wgpu", "x11"] }
 log = "0.4"
+regex = "1.10.6"
 wgpu = { version = "*", features = ["webgpu", "webgl"] }
 
 # native:

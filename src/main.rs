@@ -1,10 +1,11 @@
 use cga2d::{Blade, Multivector};
-use config::{PuzzleInfo, Schlafli, Settings, TilingSettings, ViewSettings};
+use config::{PuzzleInfo, Schlafli, Settings, Tiling, ViewSettings};
 use eframe::{
-    egui::{self, pos2, vec2, CollapsingHeader, Color32, Frame, Pos2, Shadow, Slider},
+    egui::{self, pos2, vec2, CollapsingHeader, Color32, Frame, Pos2, RichText, Shadow, Slider},
     epaint::PathShape,
 };
 use gfx::GfxData;
+use regex::Regex;
 
 mod config;
 mod geom;
@@ -75,7 +76,7 @@ fn main() {
 struct App {
     scale: f32,
     settings: Settings,
-    mirrors: Vec<cga2d::Blade3>,
+    tiling: Tiling,
     gfx_data: GfxData,
     camera_transform: cga2d::Rotor,
     puzzle_info: PuzzleInfo,
@@ -87,16 +88,14 @@ impl App {
 
         let settings = Settings::new();
 
-        let mirrors = settings.tiling_settings.get_mirrors().expect("Hardcoded");
-        let puzzle_info = settings
-            .tiling_settings
-            .get_puzzle_info(settings.tile_limit)
-            .expect("Hardcoded");
+        let tiling = settings.tiling_settings.generate().unwrap();
+
+        let puzzle_info = tiling.get_puzzle_info(settings.tile_limit).unwrap();
 
         Self {
             scale: 1.,
             settings,
-            mirrors,
+            tiling,
             gfx_data,
             camera_transform: cga2d::Rotor::ident(),
             puzzle_info,
@@ -165,13 +164,14 @@ impl eframe::App for App {
                             let modifiers = ctx.input(|i| i.modifiers);
 
                             let ms: Vec<cga2d::Blade3> = self
+                                .tiling
                                 .mirrors
                                 .iter()
                                 .map(|&m| self.camera_transform.sandwich(m))
                                 .collect();
                             let boundary = match (modifiers.command, modifiers.alt) {
                                 (true, false) => {
-                                    let third = if self.settings.tiling_settings.rank == 4 {
+                                    let third = if self.tiling.rank == 4 {
                                         !ms[3]
                                     } else {
                                         !(!ms[0] ^ !ms[1] ^ !ms[2])
@@ -179,7 +179,7 @@ impl eframe::App for App {
                                     !ms[1] ^ !ms[2] ^ third
                                 }
                                 (false, true) => {
-                                    let third = if self.settings.tiling_settings.rank == 4 {
+                                    let third = if self.tiling.rank == 4 {
                                         !ms[3]
                                     } else {
                                         !(!ms[0] ^ !ms[1] ^ !ms[2])
@@ -214,11 +214,12 @@ impl eframe::App for App {
                 }
                 self.gfx_data.frame(
                     gfx::Params::new(
-                        self.mirrors
+                        self.tiling
+                            .mirrors
                             .iter()
                             .map(|&m| self.camera_transform.sandwich(m))
                             .collect(),
-                        self.settings.tiling_settings.edges.clone(),
+                        self.tiling.edges.clone(),
                         if let Some(mpos) = ctx.pointer_latest_pos() {
                             egui_to_geom(mpos)
                         } else {
@@ -255,6 +256,7 @@ impl eframe::App for App {
                 let stroke_width = 1.;
                 if self.settings.view_settings.mirrors {
                     for (i, mirror) in self
+                        .tiling
                         .mirrors
                         .iter()
                         .map(|&m| self.camera_transform.sandwich(m))
@@ -313,7 +315,7 @@ impl eframe::App for App {
                         if ui.input(|i| i.pointer.primary_down()) {
                             ui.painter()
                                 .circle_filled(geom_to_egui(seed), 5., egui::Color32::GRAY);
-                            for (i, &mirror) in self.mirrors.iter().enumerate() {
+                            for (i, &mirror) in self.tiling.mirrors.iter().enumerate() {
                                 if !(mirror ^ seed) < 0. {
                                     ui.painter().circle_filled(
                                         geom_to_egui(mirror.sandwich(seed)),
@@ -324,7 +326,7 @@ impl eframe::App for App {
                             }
                             for _ in 0..100 {
                                 let mut done = true;
-                                for (i, &mirror) in self.mirrors.iter().enumerate() {
+                                for (i, &mirror) in self.tiling.mirrors.iter().enumerate() {
                                     if !(mirror ^ seed) < 0. {
                                         let new_seed = mirror.sandwich(seed);
                                         ui.painter().line_segment(
@@ -355,49 +357,35 @@ impl eframe::App for App {
                     // .stroke(Stroke::NONE)
                     .show(ui, |ui| {
                         CollapsingHeader::new("Settings").show(ui, |ui| {
-                            let mut changed = false;
+                            let mut needs_try_regenerate = false;
                             ui.collapsing("Tiling Settings", |ui| {
                                 ui.horizontal(|ui| {
-                                    if ui
-                                        .add(Slider::new(
-                                            &mut self.settings.tiling_settings.rank,
-                                            3..=4,
-                                        ))
-                                        .changed()
-                                    {
-                                        self.settings.tiling_settings.values =
-                                            Schlafli::new(self.settings.tiling_settings.rank);
-                                        changed = true;
-                                    };
-                                    ui.label("Rank");
+                                    needs_try_regenerate |= ui
+                                        .text_edit_singleline(
+                                            &mut self.settings.tiling_settings.schlafli,
+                                        )
+                                        .changed();
+                                    ui.label(
+                                        RichText::new("■").color(
+                                            match Regex::new(config::SCHLAFLI_PATTERN)
+                                                .unwrap()
+                                                .is_match(&self.settings.tiling_settings.schlafli)
+                                            {
+                                                true => egui::Color32::GREEN,
+                                                false => egui::Color32::RED,
+                                            },
+                                        ),
+                                    );
                                 });
-                                for (i, val) in self
-                                    .settings
-                                    .tiling_settings
-                                    .values
-                                    .0
-                                    .iter_mut()
-                                    .enumerate()
-                                {
-                                    ui.horizontal(|ui| {
-                                        if ui.add(Slider::new(val, 3..=10)).changed() {
-                                            changed = true;
-                                        };
-                                        ui.label(["A", "B", "C"][i]);
-                                    });
-                                }
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 0.;
-                                    for (i, val) in
-                                        self.settings.tiling_settings.edges.iter_mut().enumerate()
-                                    {
-                                        if i < (self.settings.tiling_settings.rank as usize) {
+                                    for (i, val) in self.tiling.edges.iter_mut().enumerate() {
+                                        if i < (self.tiling.rank as usize) {
                                             ui.checkbox(val, "");
-                                            if i < (self.settings.tiling_settings.rank as usize - 1)
-                                            {
+                                            if i < (self.tiling.rank as usize - 1) {
                                                 ui.label(
-                                                    self.settings.tiling_settings.values.0[i]
-                                                        .to_string(),
+                                                    self.tiling.schlafli.0[i]
+                                                        .map_or("i".to_string(), |x| x.to_string()),
                                                 );
                                             }
                                         }
@@ -406,20 +394,24 @@ impl eframe::App for App {
                                 for rel in &mut self.settings.tiling_settings.relations {
                                     ui.text_edit_singleline(rel);
                                 }
-                                if ui.button("+").clicked() {
-                                    self.settings.tiling_settings.relations.push("".to_string());
-                                }
                                 ui.horizontal(|ui| {
-                                    for x in &mut self.settings.tiling_settings.subgroup {
-                                        ui.add(
-                                            egui::DragValue::new(x)
-                                                .range(0..=self.settings.tiling_settings.rank),
-                                        );
-                                    }
                                     if ui.button("+").clicked() {
-                                        self.settings.tiling_settings.subgroup.push(0);
+                                        self.settings
+                                            .tiling_settings
+                                            .relations
+                                            .push("".to_string());
+                                        needs_try_regenerate = true;
+                                    }
+                                    if ui.button("-").clicked() {
+                                        self.settings.tiling_settings.relations.pop();
+                                        needs_try_regenerate = true;
                                     }
                                 });
+                                needs_try_regenerate |= ui
+                                    .text_edit_singleline(
+                                        &mut self.settings.tiling_settings.subgroup,
+                                    )
+                                    .changed();
                             });
                             ui.collapsing("View Settings", |ui| {
                                 ui.horizontal(|ui| {
@@ -435,6 +427,10 @@ impl eframe::App for App {
                                 ui.checkbox(
                                     &mut self.settings.view_settings.fundamental,
                                     "Draw fundamental region",
+                                );
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.mirrors,
+                                    "Draw mirrors",
                                 );
                                 ui.checkbox(
                                     &mut self.settings.view_settings.col_tiles,
@@ -460,24 +456,23 @@ impl eframe::App for App {
                                     )
                                     .changed()
                                 {
-                                    changed = true;
+                                    needs_try_regenerate = true;
                                 };
                                 ui.label("Tile Limit");
                             });
 
-                            if ui.button("Reset Camera").clicked() {
-                                self.camera_transform = cga2d::Rotor::ident();
-                            }
-                            if changed {
-                                if let Some(mirrors) = self.settings.tiling_settings.get_mirrors() {
-                                    self.mirrors = mirrors;
-                                    let info = self
-                                        .settings
-                                        .tiling_settings
-                                        .get_puzzle_info(self.settings.tile_limit);
-                                    if info.is_ok() {
-                                        self.puzzle_info = info.unwrap();
+                            ui.horizontal(|ui| {
+                                if ui.button("Reset Camera").clicked() {
+                                    self.camera_transform = cga2d::Rotor::ident();
+                                }
+                                needs_try_regenerate |= ui.button("Regenerate").clicked();
+                            });
+                            if needs_try_regenerate {
+                                if let Ok(x) = self.settings.tiling_settings.generate() {
+                                    if let Ok(info) = x.get_puzzle_info(self.settings.tile_limit) {
+                                        self.puzzle_info = info;
                                     }
+                                    self.tiling = x;
                                     self.needs_regenerate = true;
                                     ctx.request_repaint();
                                 }

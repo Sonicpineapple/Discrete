@@ -887,6 +887,7 @@ dependencies = [
  "eframe",
  "env_logger",
  "log",
+ "regex",
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
