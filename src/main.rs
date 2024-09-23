@@ -73,6 +73,23 @@ fn main() {
     });
 }
 
+enum Status {
+    Invalid,
+    Generated,
+    Failed,
+    Idle,
+}
+impl Status {
+    fn message(&self) -> String {
+        match self {
+            Status::Invalid => "Invalid".to_string(),
+            Status::Generated => "Generated".to_string(),
+            Status::Failed => "Failed".to_string(),
+            Status::Idle => "".to_string(),
+        }
+    }
+}
+
 struct App {
     scale: f32,
     settings: Settings,
@@ -81,6 +98,7 @@ struct App {
     camera_transform: cga2d::Rotor,
     puzzle_info: PuzzleInfo,
     needs_regenerate: bool,
+    status: Status,
 }
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -100,6 +118,7 @@ impl App {
             camera_transform: cga2d::Rotor::ident(),
             puzzle_info,
             needs_regenerate: true,
+            status: Status::Idle,
         }
     }
 }
@@ -392,7 +411,7 @@ impl eframe::App for App {
                                     }
                                 });
                                 for rel in &mut self.settings.tiling_settings.relations {
-                                    ui.text_edit_singleline(rel);
+                                    needs_try_regenerate |= ui.text_edit_singleline(rel).changed();
                                 }
                                 ui.horizontal(|ui| {
                                     if ui.button("+").clicked() {
@@ -471,12 +490,19 @@ impl eframe::App for App {
                                 if let Ok(x) = self.settings.tiling_settings.generate() {
                                     if let Ok(info) = x.get_puzzle_info(self.settings.tile_limit) {
                                         self.puzzle_info = info;
+                                        self.status = Status::Generated;
+                                    } else {
+                                        self.status = Status::Failed;
                                     }
                                     self.tiling = x;
                                     self.needs_regenerate = true;
                                     ctx.request_repaint();
+                                } else {
+                                    self.status = Status::Invalid;
                                 }
                             }
+                            ui.label(self.status.message());
+                            ui.label(self.puzzle_info.coset_group.point_count().to_string());
                         })
                     });
             });

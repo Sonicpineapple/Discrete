@@ -30,7 +30,11 @@ pub(crate) fn parse_relation(string: &str) -> Result<Vec<u8>, ()> {
             .as_str()
             .parse()
             .expect("Guaranteed by regex");
-        Ok((0..rep).flat_map(|_| rel.clone()).collect())
+        if rep > 0 {
+            Ok((0..rep).flat_map(|_| rel.clone()).collect())
+        } else {
+            Err(())
+        }
     } else {
         Err(())
     }
@@ -127,12 +131,16 @@ pub(crate) struct Tiling {
 impl Tiling {
     pub fn from_settings(tiling_settings: &TilingSettings) -> Result<Self, ()> {
         let schlafli = Schlafli::from_str(&tiling_settings.schlafli)?;
+        let rank = schlafli.rank();
         let mut relations = schlafli.get_rels();
-        let mut x = tiling_settings
+        let mut x: Vec<Vec<u8>> = tiling_settings
             .relations
             .iter()
             .map(|r| parse_relation(r))
             .collect::<Result<_, ()>>()?;
+        if !x.iter().all(|r| r.iter().all(|&g| g < rank)) {
+            return Err(());
+        };
         relations.append(&mut x);
         let subgroup = parse_subgroup(&tiling_settings.subgroup)?
             .iter()
@@ -142,7 +150,7 @@ impl Tiling {
         let mirrors = schlafli.get_mirrors()?;
 
         Ok(Self {
-            rank: schlafli.rank(),
+            rank,
             schlafli: schlafli,
             mirrors,
             edges: vec![false, false, true, false],

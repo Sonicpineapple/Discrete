@@ -49,23 +49,59 @@ impl Tables {
     /// Fill in tables based on a new result.
     fn deduce(&mut self, coset: CosetIndex, generator: u8, result: CosetIndex) {
         let mut new_friends = VecDeque::from(vec![(coset, generator, result)]);
-        while let Some((coset, generator, result)) = new_friends.pop_front() {
+        while let Some((mut coset, generator, mut result)) = new_friends.pop_front() {
+            coset = self.coset_table.redirect_index(coset);
+            result = self.coset_table.redirect_index(result);
             if let Some(res) = self.coset_table[coset][generator as usize] {
                 if res != result {
                     // Coincidence
-                    panic!("Oops, all coinkidink");
-                    // let keep = min(res.0, result.0);
-                    // let replace = max(res.0, result.0);
+                    let replace = res.max(result);
+                    result = res.min(result);
+
+                    self.resolve_coincidence(result, replace);
                 }
             }
-            // dbg!(&new_friends);
-            self.coset_table[coset][generator as usize] = Some(result);
-            self.coset_table[result][generator as usize] = Some(coset); // inverse
+
+            self.coset_table[coset][generator as usize] =
+                Some(self.coset_table.redirect_index(result));
+            self.coset_table[result][generator as usize] =
+                Some(self.coset_table.redirect_index(coset)); // inverse
 
             for rel_table in &mut self.relation_tables {
                 rel_table.update(&self.coset_table, &mut new_friends);
             }
         }
+    }
+
+    /// Fix a duplicate result.
+    fn resolve_coincidence(&mut self, keep: CosetIndex, replace: CosetIndex) {
+        self.coset_table.tombstones[replace.0 as usize] = Some(keep);
+
+        let replace_index = |c: CosetIndex| match c.cmp(&replace) {
+            std::cmp::Ordering::Equal => keep,
+            _ => c,
+        };
+
+        self.coset_table
+            .tombstones
+            .iter_mut()
+            .for_each(|i| *i = i.map(replace_index));
+        self.coset_table
+            .entries
+            .iter_mut()
+            .for_each(|i| *i = i.map(replace_index));
+        for rel_table in &mut self.relation_tables {
+            for row in &mut rel_table.rows {
+                row.left_coset = replace_index(row.left_coset);
+                row.right_coset = replace_index(row.right_coset);
+            }
+        }
+
+        (0..self.coset_table.gen_count).for_each(|g| {
+            if let Some(res) = self.coset_table[replace][g] {
+                self.deduce(keep, g as u8, res);
+            }
+        });
     }
 
     /// Fill in next empty coset table value with a new coset
@@ -78,10 +114,36 @@ impl Tables {
         let new_word = self.word_table[coset].clone() * Generator(generator as u8);
         self.word_table.push(new_word);
         self.deduce(coset, generator as u8, result);
-        // for rel in &self.relation_tables {
-        //     dbg!(rel);
-        // }
-        //return Some(self.coset_table.to_string());
+
+        let mut fresh_indices = 0..;
+        let index_replacements: Vec<CosetIndex> = self
+            .coset_table
+            .tombstones
+            .iter()
+            .map(|replacement| {
+                replacement.unwrap_or_else(|| CosetIndex(fresh_indices.next().unwrap()))
+            })
+            .collect();
+        let replace_index = |c: CosetIndex| index_replacements[c.0 as usize];
+
+        // Reindex everyone down
+        self.coset_table
+            .entries
+            .iter_mut()
+            .for_each(|i| *i = i.map(replace_index));
+        for rel_table in &mut self.relation_tables {
+            for row in &mut rel_table.rows {
+                row.left_coset = replace_index(row.left_coset);
+                row.right_coset = replace_index(row.right_coset);
+            }
+            rel_table.remove_redirected(&self.coset_table.tombstones);
+        }
+        self.word_table
+            .remove_redirected(&self.coset_table.tombstones);
+
+        // Remove everyone replaced and throw out old tombstones
+        self.coset_table.remove_redirected();
+
         return true;
     }
 
@@ -109,11 +171,12 @@ impl Tables {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct CosetIndex(u16);
 
 struct CosetTable {
     entries: Vec<Option<CosetIndex>>,
+    tombstones: Vec<Option<CosetIndex>>,
     gen_count: usize,
 }
 impl CosetTable {
@@ -121,6 +184,7 @@ impl CosetTable {
     fn new(gen_count: usize) -> Self {
         Self {
             entries: vec![None; gen_count],
+            tombstones: vec![None; gen_count],
             gen_count,
         }
     }
@@ -145,21 +209,58 @@ impl CosetTable {
     /// Initialise a new row for a new coset, returning the index of that coset.
     fn add_row(&mut self) -> CosetIndex {
         self.entries.extend((0..self.gen_count).map(|_| None));
+        self.tombstones.push(None);
         CosetIndex((self.row_count() - 1) as u16)
+    }
+
+    fn remove(&mut self, index: CosetIndex) -> Vec<Option<CosetIndex>> {
+        let range = self.row_range(index);
+        self.entries.drain(range).collect()
+    }
+
+    fn row_range(&self, index: CosetIndex) -> std::ops::Range<usize> {
+        let i = index.0 as usize * self.gen_count;
+        i..i + self.gen_count
+    }
+
+    /// Cascade a coset through any reindexings
+    fn redirect_index(&self, mut index: CosetIndex) -> CosetIndex {
+        while let Some(redirect) = self.tombstones[index.0 as usize] {
+            index = redirect;
+        }
+        index
+    }
+
+    /// Remove rows for cosets that have been reindexed
+    fn remove_redirected(&mut self) {
+        let rows = self.row_count();
+        let Self {
+            entries,
+            tombstones,
+            gen_count,
+        } = self;
+
+        for t in (0..rows).rev() {
+            if tombstones[t].is_some() {
+                let i = t * *gen_count;
+                let range = i..i + *gen_count;
+                entries.drain(range);
+            }
+        }
+        tombstones.retain(|t| t.is_none());
     }
 }
 impl Index<CosetIndex> for CosetTable {
     type Output = [Option<CosetIndex>];
 
     fn index(&self, index: CosetIndex) -> &Self::Output {
-        let i = index.0 as usize * self.gen_count;
-        &self.entries[i..i + self.gen_count]
+        &self.entries[self.row_range(self.redirect_index(index))]
     }
 }
 impl IndexMut<CosetIndex> for CosetTable {
     fn index_mut(&mut self, index: CosetIndex) -> &mut Self::Output {
-        let i = index.0 as usize * self.gen_count;
-        &mut self.entries[i..i + self.gen_count]
+        let range = self.row_range(self.redirect_index(index));
+        &mut self.entries[range]
     }
 }
 impl fmt::Display for CosetTable {
@@ -207,13 +308,13 @@ impl RelationTable {
             while let Some(Some(result)) = (!row.is_full())
                 .then(|| coset_table[row.left_coset][self.relation[row.left_rel_index] as usize])
             {
-                row.left_coset = result;
+                row.left_coset = coset_table.redirect_index(result);
                 row.left_rel_index += 1;
             }
             while let Some(Some(result)) = (!row.is_full())
                 .then(|| coset_table[row.right_coset][self.relation[row.right_rel_index] as usize])
             {
-                row.right_coset = result;
+                row.right_coset = coset_table.redirect_index(result);
                 row.right_rel_index -= 1;
             }
             if row.is_full() {
@@ -230,6 +331,15 @@ impl RelationTable {
     fn add_row(&mut self, index: CosetIndex) {
         self.rows
             .push(RelationTableRow::new(self.relation.len(), index));
+    }
+
+    /// Remove rows for cosets that have been reindexed
+    fn remove_redirected(&mut self, tombstones: &Vec<Option<CosetIndex>>) {
+        for t in (0..tombstones.len()).rev() {
+            if tombstones[t].is_some() {
+                self.rows.remove(t);
+            }
+        }
     }
 }
 impl Index<CosetIndex> for RelationTable {
@@ -282,6 +392,14 @@ impl WordTable {
 
     fn push(&mut self, word: Word) {
         self.words.push(word);
+    }
+
+    fn remove_redirected(&mut self, tombstones: &Vec<Option<CosetIndex>>) {
+        for t in (0..tombstones.len()).rev() {
+            if tombstones[t].is_some() {
+                self.words.remove(t);
+            }
+        }
     }
 }
 impl Index<CosetIndex> for WordTable {
