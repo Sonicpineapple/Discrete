@@ -1,13 +1,12 @@
 use cga2d::{Blade, Multivector};
+use config::{PuzzleInfo, Schlafli, Settings, TilingSettings, ViewSettings};
 use eframe::{
-    egui::{self, pos2, vec2, CollapsingHeader, Color32, Frame, Modifiers, Pos2, Shadow, Slider},
+    egui::{self, pos2, vec2, CollapsingHeader, Color32, Frame, Pos2, Shadow, Slider},
     epaint::PathShape,
 };
-use geom::{rank_3_mirrors, rank_4_mirrors};
 use gfx::GfxData;
-use group::{Generator, Group, Point, Word};
-use todd_coxeter::{get_coset_table, get_element_table, Tables};
 
+mod config;
 mod geom;
 mod gfx;
 mod group;
@@ -73,101 +72,10 @@ fn main() {
     });
 }
 
-#[derive(Debug, Clone)]
-struct PuzzleInfo {
-    element_group: Group,
-    coset_group: Group,
-    /// Map from a group element E to C0 * E' in the coset group
-    inverse_map: Vec<Point>,
-}
-
-struct Schlafli(Vec<usize>);
-impl Schlafli {
-    fn new(rank: u8) -> Self {
-        match rank {
-            3 => Self(vec![7, 3]),
-            4 => Self(vec![7, 3, 3]),
-            _ => todo!(),
-        }
-    }
-
-    fn get_rels(&self) -> Vec<Vec<u8>> {
-        let mut rels = vec![];
-        for (i, &val) in self.0.iter().enumerate() {
-            for x in 0..i {
-                rels.push((0..2).flat_map(|_| [x as u8, i as u8 + 1]).collect());
-            }
-            rels.push((0..val).flat_map(|_| [i as u8, i as u8 + 1]).collect());
-        }
-        rels
-    }
-}
-
-struct Settings {
-    rank: u8,
-    values: Schlafli,
-    edges: Vec<bool>,
-    relations: Vec<Vec<u8>>,
-    subgroup: Vec<u8>,
-    col_scale: f32,
-    depth: u32,
-    fundamental: bool,
-    col_tiles: bool,
-    inverse_col: bool,
-}
-impl Settings {
-    fn new(rank: u8) -> Self {
-        let values = Schlafli::new(rank);
-        let mut relations = values.get_rels();
-        relations.extend([(0..8).flat_map(|_| [0, 2, 1]).collect()]);
-        // let mut rels = schlafli_rels(vec![8, 3, 3]);
-        // rels.push((0..2).flat_map(|_| [0, 2, 1, 0, 2, 1, 0, 1]).collect());
-        let subgroup = vec![0, 1];
-
-        Self {
-            rank,
-            values,
-            edges: vec![false, false, true, false],
-            relations,
-            subgroup,
-            col_scale: 1.,
-            depth: 50,
-            fundamental: true,
-            col_tiles: false,
-            inverse_col: false,
-        }
-    }
-    fn get_mirrors(&self) -> Option<Vec<cga2d::Blade3>> {
-        Some(match self.rank {
-            3 => rank_3_mirrors(self.values.0[0], self.values.0[1])?.to_vec(),
-            4 => rank_4_mirrors(self.values.0[0], self.values.0[1], self.values.0[2])?.to_vec(),
-            _ => todo!(),
-        })
-    }
-    fn get_puzzle_info(&self) -> PuzzleInfo {
-        let element_group = get_element_table(3, &self.relations);
-        let coset_group = get_coset_table(3, &self.relations, &self.subgroup);
-
-        // Inverse Element -> Coset
-        let inverse_map: Vec<Point> = element_group
-            .word_table
-            .iter()
-            .map(|word| coset_group.mul_word(Point::INIT, word.inverse()))
-            .collect();
-
-        PuzzleInfo {
-            element_group,
-            coset_group,
-            inverse_map,
-        }
-    }
-}
-
 struct App {
     scale: f32,
     settings: Settings,
     mirrors: Vec<cga2d::Blade3>,
-    // mirrors: [cga2d::Blade3; 4],
     gfx_data: GfxData,
     camera_transform: cga2d::Rotor,
     puzzle_info: PuzzleInfo,
@@ -177,10 +85,13 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let gfx_data = GfxData::new(cc);
 
-        let settings = Settings::new(3);
+        let settings = Settings::new();
 
-        let mirrors = settings.get_mirrors().expect("Hardcoded");
-        let puzzle_info = settings.get_puzzle_info();
+        let mirrors = settings.tiling_settings.get_mirrors().expect("Hardcoded");
+        let puzzle_info = settings
+            .tiling_settings
+            .get_puzzle_info(settings.tile_limit)
+            .expect("Hardcoded");
 
         Self {
             scale: 1.,
@@ -218,6 +129,7 @@ impl eframe::App for App {
                     egui::Sense::click_and_drag(),
                 );
 
+                // Scroll zooming
                 if r.hovered() {
                     let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y / unit);
                     if scroll_delta.abs() > 0.001 {
@@ -225,6 +137,7 @@ impl eframe::App for App {
                         unit = size.min_elem() / (2. * self.scale);
                     }
                 }
+
                 let scale = egui_rect.size() / (1. * egui_rect.size().min_elem());
                 let scale = [scale.x * self.scale, scale.y * self.scale];
 
@@ -238,6 +151,7 @@ impl eframe::App for App {
                     }
                 };
 
+                // Camera movement
                 if r.dragged_by(egui::PointerButton::Secondary) {
                     if r.drag_delta().length() > 0.1 {
                         if let Some(mpos) = r.interact_pointer_pos() {
@@ -249,24 +163,30 @@ impl eframe::App for App {
                             let end_pos = egui_to_geom(mpos);
 
                             let modifiers = ctx.input(|i| i.modifiers);
+
+                            let ms: Vec<cga2d::Blade3> = self
+                                .mirrors
+                                .iter()
+                                .map(|&m| self.camera_transform.sandwich(m))
+                                .collect();
                             let boundary = match (modifiers.command, modifiers.alt) {
                                 (true, false) => {
-                                    let third = if self.settings.rank == 4 {
-                                        !self.mirrors[3]
+                                    let third = if self.settings.tiling_settings.rank == 4 {
+                                        !ms[3]
                                     } else {
-                                        !(!self.mirrors[0] ^ !self.mirrors[1] ^ !self.mirrors[2])
+                                        !(!ms[0] ^ !ms[1] ^ !ms[2])
                                     };
-                                    !self.mirrors[1] ^ !self.mirrors[2] ^ third
+                                    !ms[1] ^ !ms[2] ^ third
                                 }
                                 (false, true) => {
-                                    let third = if self.settings.rank == 4 {
-                                        !self.mirrors[3]
+                                    let third = if self.settings.tiling_settings.rank == 4 {
+                                        !ms[3]
                                     } else {
-                                        !(!self.mirrors[0] ^ !self.mirrors[1] ^ !self.mirrors[2])
+                                        !(!ms[0] ^ !ms[1] ^ !ms[2])
                                     };
-                                    !self.mirrors[0] ^ !self.mirrors[1] ^ third
+                                    !ms[0] ^ !ms[1] ^ third
                                 }
-                                _ => !self.mirrors[0] ^ !self.mirrors[1] ^ !self.mirrors[2],
+                                _ => !ms[0] ^ !ms[1] ^ !ms[2],
                             }; // the boundary to fix when transforming space
 
                             let init_refl = !(root_pos ^ end_pos) ^ !boundary; // get root_pos to end_pos
@@ -282,11 +202,9 @@ impl eframe::App for App {
                 let egui_to_geom = |pos: Pos2| {
                     let Pos { x, y } = egui_to_screen(pos);
                     self.camera_transform.rev().sandwich(cga2d::point(x, y))
-                    // cga2d::point(x, y)
                 };
                 let geom_to_egui = |pos: cga2d::Blade1| {
                     let (x, y) = self.camera_transform.sandwich(pos).unpack_point();
-                    // let (x, y) = pos.unpack_point();
                     screen_to_egui(Pos { x, y })
                 };
 
@@ -300,18 +218,15 @@ impl eframe::App for App {
                             .iter()
                             .map(|&m| self.camera_transform.sandwich(m))
                             .collect(),
-                        self.settings.edges.clone(),
+                        self.settings.tiling_settings.edges.clone(),
                         if let Some(mpos) = ctx.pointer_latest_pos() {
                             egui_to_geom(mpos)
                         } else {
                             cga2d::point(0., 1.)
                         },
                         scale,
-                        self.settings.col_scale,
                         self.settings.depth,
-                        self.settings.fundamental,
-                        self.settings.col_tiles,
-                        self.settings.inverse_col,
+                        &self.settings.view_settings,
                     ),
                     target_size[0],
                     target_size[1],
@@ -338,46 +253,51 @@ impl eframe::App for App {
                     egui::Color32::YELLOW,
                 ];
                 let stroke_width = 1.;
-                for (i, mirror) in self
-                    .mirrors
-                    .iter()
-                    .map(|&m| self.camera_transform.sandwich(m))
-                    .enumerate()
-                {
-                    // Find the point pair where the mirror intersects the visible region.
-                    let pp = mirror & boundary_circle;
-                    if let Some(_) = pp.unpack_point_pair() {
-                        let mid = pp.sandwich(cga2d::NI);
-                        let perpendicular_pp = pp.connect(mid) & mirror;
+                if self.settings.view_settings.mirrors {
+                    for (i, mirror) in self
+                        .mirrors
+                        .iter()
+                        .map(|&m| self.camera_transform.sandwich(m))
+                        .enumerate()
+                    {
+                        // Find the point pair where the mirror intersects the visible region.
+                        let pp = mirror & boundary_circle;
+                        if let Some(_) = pp.unpack_point_pair() {
+                            let mid = pp.sandwich(cga2d::NI);
+                            let perpendicular_pp = pp.connect(mid) & mirror;
 
-                        // Sample points uniformly along the mirror.
-                        const CURVE_SAMPLE_COUNT: usize = 200;
-                        let points = (0..=CURVE_SAMPLE_COUNT)
-                            .filter_map(|i| {
-                                // Interpolate along a straight line.
-                                let t = i as f64 / CURVE_SAMPLE_COUNT as f64;
-                                let [sample_point, _] =
-                                    cga2d::slerp(pp, perpendicular_pp, t * std::f64::consts::PI)
-                                        .unpack_point_pair()?;
-                                Some(sample_point.unpack_point())
-                            })
-                            .map(|(x, y)| screen_to_egui(Pos { x, y }))
-                            .collect();
-                        ui.painter().add(PathShape {
-                            points,
-                            closed: false,
-                            fill: Color32::TRANSPARENT,
-                            stroke: (stroke_width, cols[i]).into(),
-                        });
-                    } else {
-                        match mirror.unpack(0.001) {
-                            cga2d::LineOrCircle::Line { .. } => (), // does not intersect view
-                            cga2d::LineOrCircle::Circle { cx, cy, r } => {
-                                ui.painter().circle_stroke(
-                                    screen_to_egui(Pos::new(cx, cy)),
-                                    (r * unit as f64) as _,
-                                    (stroke_width, cols[i]),
-                                );
+                            // Sample points uniformly along the mirror.
+                            const CURVE_SAMPLE_COUNT: usize = 200;
+                            let points = (0..=CURVE_SAMPLE_COUNT)
+                                .filter_map(|i| {
+                                    // Interpolate along a straight line.
+                                    let t = i as f64 / CURVE_SAMPLE_COUNT as f64;
+                                    let [sample_point, _] = cga2d::slerp(
+                                        pp,
+                                        perpendicular_pp,
+                                        t * std::f64::consts::PI,
+                                    )
+                                    .unpack_point_pair()?;
+                                    Some(sample_point.unpack_point())
+                                })
+                                .map(|(x, y)| screen_to_egui(Pos { x, y }))
+                                .collect();
+                            ui.painter().add(PathShape {
+                                points,
+                                closed: false,
+                                fill: Color32::TRANSPARENT,
+                                stroke: (stroke_width, cols[i]).into(),
+                            });
+                        } else {
+                            match mirror.unpack(0.001) {
+                                cga2d::LineOrCircle::Line { .. } => (), // does not intersect view
+                                cga2d::LineOrCircle::Circle { cx, cy, r } => {
+                                    ui.painter().circle_stroke(
+                                        screen_to_egui(Pos::new(cx, cy)),
+                                        (r * unit as f64) as _,
+                                        (stroke_width, cols[i]),
+                                    );
+                                }
                             }
                         }
                     }
@@ -427,6 +347,8 @@ impl eframe::App for App {
                         }
                     }
                 }
+
+                // Settings menu
                 Frame::popup(ui.style())
                     .outer_margin(10.)
                     .shadow(Shadow::NONE)
@@ -434,39 +356,94 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         CollapsingHeader::new("Settings").show(ui, |ui| {
                             let mut changed = false;
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .add(Slider::new(&mut self.settings.rank, 3..=4))
-                                    .changed()
-                                {
-                                    self.settings.values = Schlafli::new(self.settings.rank);
-                                    changed = true;
-                                };
-                                ui.label("Rank");
-                            });
-                            for (i, val) in self.settings.values.0.iter_mut().enumerate() {
+                            ui.collapsing("Tiling Settings", |ui| {
                                 ui.horizontal(|ui| {
-                                    if ui.add(Slider::new(val, 3..=10)).changed() {
+                                    if ui
+                                        .add(Slider::new(
+                                            &mut self.settings.tiling_settings.rank,
+                                            3..=4,
+                                        ))
+                                        .changed()
+                                    {
+                                        self.settings.tiling_settings.values =
+                                            Schlafli::new(self.settings.tiling_settings.rank);
                                         changed = true;
                                     };
-                                    ui.label(["A", "B", "C"][i]);
+                                    ui.label("Rank");
                                 });
-                            }
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 0.;
-                                for (i, val) in self.settings.edges.iter_mut().enumerate() {
-                                    ui.checkbox(val, "");
-                                    if i < (self.settings.rank as usize - 1) {
-                                        ui.label(self.settings.values.0[i].to_string());
-                                    }
+                                for (i, val) in self
+                                    .settings
+                                    .tiling_settings
+                                    .values
+                                    .0
+                                    .iter_mut()
+                                    .enumerate()
+                                {
+                                    ui.horizontal(|ui| {
+                                        if ui.add(Slider::new(val, 3..=10)).changed() {
+                                            changed = true;
+                                        };
+                                        ui.label(["A", "B", "C"][i]);
+                                    });
                                 }
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 0.;
+                                    for (i, val) in
+                                        self.settings.tiling_settings.edges.iter_mut().enumerate()
+                                    {
+                                        if i < (self.settings.tiling_settings.rank as usize) {
+                                            ui.checkbox(val, "");
+                                            if i < (self.settings.tiling_settings.rank as usize - 1)
+                                            {
+                                                ui.label(
+                                                    self.settings.tiling_settings.values.0[i]
+                                                        .to_string(),
+                                                );
+                                            }
+                                        }
+                                    }
+                                });
+                                for rel in &mut self.settings.tiling_settings.relations {
+                                    ui.text_edit_singleline(rel);
+                                }
+                                if ui.button("+").clicked() {
+                                    self.settings.tiling_settings.relations.push("".to_string());
+                                }
+                                ui.horizontal(|ui| {
+                                    for x in &mut self.settings.tiling_settings.subgroup {
+                                        ui.add(
+                                            egui::DragValue::new(x)
+                                                .range(0..=self.settings.tiling_settings.rank),
+                                        );
+                                    }
+                                    if ui.button("+").clicked() {
+                                        self.settings.tiling_settings.subgroup.push(0);
+                                    }
+                                });
                             });
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    Slider::new(&mut self.settings.col_scale, 0.1..=2.0)
+                            ui.collapsing("View Settings", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        Slider::new(
+                                            &mut self.settings.view_settings.col_scale,
+                                            0.1..=2.0,
+                                        )
                                         .logarithmic(true),
+                                    );
+                                    ui.label("Colour Scale");
+                                });
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.fundamental,
+                                    "Draw fundamental region",
                                 );
-                                ui.label("Colour Scale");
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.col_tiles,
+                                    "Colour by quotient",
+                                );
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.inverse_col,
+                                    "Colour by neighbours",
+                                );
                             });
                             ui.horizontal(|ui| {
                                 ui.add(
@@ -475,16 +452,32 @@ impl eframe::App for App {
                                 );
                                 ui.label("Iteration Depth");
                             });
-                            ui.checkbox(&mut self.settings.fundamental, "Draw fundamental region");
-                            ui.checkbox(&mut self.settings.col_tiles, "Colour by quotient");
-                            ui.checkbox(&mut self.settings.inverse_col, "Colour by neighbours");
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        Slider::new(&mut self.settings.tile_limit, 100..=5000)
+                                            .logarithmic(true),
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                };
+                                ui.label("Tile Limit");
+                            });
+
                             if ui.button("Reset Camera").clicked() {
                                 self.camera_transform = cga2d::Rotor::ident();
                             }
                             if changed {
-                                if let Some(mirrors) = self.settings.get_mirrors() {
+                                if let Some(mirrors) = self.settings.tiling_settings.get_mirrors() {
                                     self.mirrors = mirrors;
-                                    self.puzzle_info = self.settings.get_puzzle_info();
+                                    let info = self
+                                        .settings
+                                        .tiling_settings
+                                        .get_puzzle_info(self.settings.tile_limit);
+                                    if info.is_ok() {
+                                        self.puzzle_info = info.unwrap();
+                                    }
                                     self.needs_regenerate = true;
                                     ctx.request_repaint();
                                 }

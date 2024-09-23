@@ -51,19 +51,19 @@ impl fmt::Display for Word {
     }
 }
 
-/// Permutation group multiplication table.
+/// Permutation group multiplication table. Possibly incomplete.
 #[derive(Debug, Clone)]
 pub(crate) struct Group {
     point_count: u16,
     generator_count: u8,
-    mul_table: HashMap<(Point, Generator), Point>,
+    mul_table: HashMap<(Point, Generator), Option<Point>>,
     pub word_table: Vec<Word>,
 }
 impl Group {
     pub fn new(
         point_count: u16,
         generator_count: u8,
-        mul_table: HashMap<(Point, Generator), Point>,
+        mul_table: HashMap<(Point, Generator), Option<Point>>,
         word_table: Vec<Word>,
     ) -> Self {
         Self {
@@ -74,16 +74,16 @@ impl Group {
         }
     }
 
-    pub fn mul_gen(&self, point: Point, gen: Generator) -> Point {
+    pub fn mul_gen(&self, point: Point, gen: Generator) -> Option<Point> {
         self.mul_table[&(point, gen)]
     }
 
-    pub fn mul_word(&self, point: Point, word: Word) -> Point {
+    pub fn mul_word(&self, point: Point, word: Word) -> Option<Point> {
         let mut result = point;
         for gen in word.0 {
-            result = self.mul_gen(result, gen);
+            result = self.mul_gen(result, gen)?;
         }
-        result
+        Some(result)
     }
 
     pub fn point_count(&self) -> u16 {
@@ -106,7 +106,11 @@ impl fmt::Display for Group {
         for p in 0..self.point_count {
             write!(f, "P{p:_>2x} ")?;
             for g in 0..self.generator_count {
-                write!(f, "P{:_>2x} ", self.mul_gen(Point(p), Generator(g)).0)?;
+                if let Some(q) = self.mul_gen(Point(p), Generator(g)) {
+                    write!(f, "P{:_>2x} ", q.0)?;
+                } else {
+                    write!(f, "P?? ")?;
+                }
             }
             writeln!(f)?;
         }

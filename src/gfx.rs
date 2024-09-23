@@ -1,15 +1,14 @@
-use std::{default, sync::Arc};
+use std::sync::Arc;
 
 use cga2d::Multivector;
 use eframe::{
-    egui::{mutex::RwLock, Context, TextureId},
+    egui::{mutex::RwLock, TextureId},
     egui_wgpu::Renderer,
     wgpu::{
         include_wgsl, util::DeviceExt, vertex_attr_array, BindGroupDescriptor, BindGroupEntry,
         BindGroupLayoutDescriptor, BindGroupLayoutEntry, BlendState, Buffer, BufferBinding,
-        BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites,
-        CommandEncoderDescriptor, Device, Extent3d, FragmentState, ImageCopyTexture,
-        ImageDataLayout, MultisampleState, Operations, Origin3d, PipelineCompilationOptions,
+        BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites, CommandEncoderDescriptor,
+        Device, Extent3d, FragmentState, MultisampleState, Operations, PipelineCompilationOptions,
         PipelineLayoutDescriptor, PrimitiveState, Queue, RenderPassColorAttachment,
         RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderStages, Texture,
         TextureDescriptor, TextureUsages, TextureViewDescriptor, VertexBufferLayout, VertexState,
@@ -18,6 +17,7 @@ use eframe::{
 use wgpu::TextureFormat;
 
 use crate::{
+    config::ViewSettings,
     group::{Generator, Point},
     PuzzleInfo,
 };
@@ -96,20 +96,27 @@ impl GfxData {
 
     pub fn regenerate_puzzle_buffer(&mut self, puzzle_info: &PuzzleInfo) {
         // Generate puzzle buffer (TODO: only when changed)
-        let big: Vec<u32> =
-            (0..puzzle_info.element_group.point_count())
-                .flat_map(|x| {
-                    let mut v = vec![puzzle_info.inverse_map[x as usize].0 as u32];
-                    v.extend((0..puzzle_info.element_group.generator_count()).map(|y| {
-                        puzzle_info.element_group.mul_gen(Point(x), Generator(y)).0 as u32
-                    }));
-                    v
-                })
-                .collect();
+        let puzzle_buffer: Vec<u32> = (0..puzzle_info.element_group.point_count())
+            .flat_map(|x| {
+                let mut v = vec![if let Some(p) = puzzle_info.inverse_map[x as usize] {
+                    p.0 as u32
+                } else {
+                    u32::MAX
+                }];
+                v.extend((0..puzzle_info.element_group.generator_count()).map(|y| {
+                    if let Some(p) = puzzle_info.element_group.mul_gen(Point(x), Generator(y)) {
+                        p.0 as u32
+                    } else {
+                        u32::MAX
+                    }
+                }));
+                v
+            })
+            .collect();
         self.puzzle_buffer = Some(self.device.create_buffer_init(
             &eframe::wgpu::util::BufferInitDescriptor {
                 label: Some("It's big"),
-                contents: bytemuck::cast_slice(&big),
+                contents: bytemuck::cast_slice(&puzzle_buffer),
                 usage: BufferUsages::STORAGE,
             },
         ));
@@ -228,11 +235,8 @@ impl Params {
         edges: Vec<bool>,
         point: cga2d::Blade1,
         scale: [f32; 2],
-        col_scale: f32,
         depth: u32,
-        fundamental: bool,
-        col_tiles: bool,
-        inverse_col: bool,
+        view_settings: &ViewSettings,
     ) -> Self {
         let mirror_count = mirrors.len() as u32;
 
@@ -254,11 +258,11 @@ impl Params {
                 point.y as f32,
             ],
             scale,
-            col_scale,
+            col_scale: view_settings.col_scale,
             depth,
-            fundamental: if fundamental { 1 } else { 0 },
-            col_tiles: if col_tiles { 1 } else { 0 },
-            inverse_col: if inverse_col { 1 } else { 0 },
+            fundamental: if view_settings.fundamental { 1 } else { 0 },
+            col_tiles: if view_settings.col_tiles { 1 } else { 0 },
+            inverse_col: if view_settings.inverse_col { 1 } else { 0 },
             mirror_count,
         }
     }

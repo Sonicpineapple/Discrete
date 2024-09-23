@@ -4,15 +4,23 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-use crate::group::{self, Generator, Group, Point, Word};
+use crate::group::{Generator, Group, Point, Word};
 
-pub(crate) fn get_element_table(gen_count: usize, rels: &Vec<Vec<u8>>) -> Group {
-    get_coset_table(gen_count, rels, &vec![])
+pub(crate) fn get_element_table(gen_count: usize, rels: &Vec<Vec<u8>>, limit: u32) -> Group {
+    get_coset_table(gen_count, rels, &vec![], limit)
 }
 
-pub(crate) fn get_coset_table(gen_count: usize, rels: &Vec<Vec<u8>>, subgroup: &Vec<u8>) -> Group {
+pub(crate) fn get_coset_table(
+    gen_count: usize,
+    rels: &Vec<Vec<u8>>,
+    subgroup: &Vec<u8>,
+    limit: u32,
+) -> Group {
     let mut tables = Tables::new(gen_count, rels, subgroup);
-    while tables.discover_next_unknown() {}
+    let mut i = 0;
+    while (i < limit) && tables.discover_next_unknown() {
+        i += 1
+    }
     tables.coset_group()
 }
 
@@ -90,10 +98,7 @@ impl Tables {
         let mut mul_table = HashMap::new();
         for (i, e) in self.coset_table.entries.iter().enumerate() {
             let (coset, gen) = self.coset_table.unpack_index(i);
-            mul_table.insert(
-                (Point(coset.0), Generator(gen as _)),
-                Point(e.expect("Attempted to get group for incomplete table").0),
-            );
+            mul_table.insert((Point(coset.0), Generator(gen as _)), e.map(|e| Point(e.0)));
         }
         Group::new(
             self.coset_table.row_count() as u16,

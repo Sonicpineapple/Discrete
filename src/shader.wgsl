@@ -1,5 +1,5 @@
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var<storage,read> puzzle: array<u32>;
+@group(0) @binding(1) var<storage,read> puzzle: array<i32>;
 
 struct Params {
     mirrors: mat4x4<f32>,
@@ -71,7 +71,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var p = up(in.color.xy);
     var q = params.point;
 
-    var elem = 0u;
+    var elem = 0;
     var k = 0;
     for (var i: u32 = 0u; i < params.depth; i++) {
         var done = true;
@@ -92,7 +92,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4(0.5,0.5,0.5,1.);
     }
 
-    if params.col_tiles == 0 {
+    if params.col_tiles == 0 || elem == -1 {
         var dist = params.col_scale;
         for (var i = 0u; i < params.mirror_count; i++) {
             if params.edges[i] > 0u {
@@ -110,13 +110,16 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 /// Get the colour of where we started by inverting the element that gets us home
-fn get_col(elem: u32) -> u32 {
-    return puzzle[(params.mirror_count + 1) * elem];
+fn get_col(elem: i32) -> i32 {
+    return puzzle[(params.mirror_count + 1) * u32(elem)];
 }
 
 /// Apply a generator to an element
-fn mul_elem_gen(elem: u32, gen: u32) -> u32 {
-    return puzzle[(params.mirror_count + 1) * elem + gen + 1];
+fn mul_elem_gen(elem: i32, gen: u32) -> i32 {
+    if elem == -1 {
+        return elem;
+    }
+    return puzzle[(params.mirror_count + 1) * u32(elem) + gen + 1];
 }
 
 fn turbo(value: f32, min: f32, max: f32) -> vec4<f32> {
