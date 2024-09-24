@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cga2d::Multivector;
+use cga2d::{Blade, Multivector};
 use eframe::{
     egui::{mutex::RwLock, TextureId},
     egui_wgpu::Renderer,
@@ -19,6 +19,7 @@ use wgpu::TextureFormat;
 use crate::{
     config::ViewSettings,
     group::{Generator, Point},
+    puzzle::Puzzle,
     PuzzleInfo,
 };
 
@@ -30,7 +31,8 @@ pub(crate) struct GfxData {
     pub pipeline: RenderPipeline,
     pub vertex_buffer: Buffer,
     pub param_buffer: Buffer,
-    pub puzzle_buffer: Option<Buffer>,
+    pub coset_buffer: Option<Buffer>,
+    pub sticker_buffer: Option<Buffer>,
     pub renderer: Arc<RwLock<Renderer>>,
 }
 impl GfxData {
@@ -79,7 +81,8 @@ impl GfxData {
             mapped_at_creation: false,
         });
 
-        let puzzle_buffer = None;
+        let coset_buffer = None;
+        let sticker_buffer = None;
 
         GfxData {
             device,
@@ -89,14 +92,17 @@ impl GfxData {
             pipeline,
             vertex_buffer,
             param_buffer,
-            puzzle_buffer,
+            coset_buffer,
+            sticker_buffer,
             renderer,
         }
     }
 
-    pub fn regenerate_puzzle_buffer(&mut self, puzzle_info: &PuzzleInfo) {
+    pub fn regenerate_puzzle_buffers(&mut self, puzzle_info: &PuzzleInfo, puzzle: &Puzzle) {
         // Generate puzzle buffer (TODO: only when changed)
-        let puzzle_buffer: Vec<u32> = (0..puzzle_info.element_group.point_count())
+
+        // LUT to multiply group elements and find C0*E' from E
+        let coset_buffer: Vec<u32> = (0..puzzle_info.element_group.point_count())
             .flat_map(|x| {
                 let mut v = vec![if let Some(p) = puzzle_info.inverse_map[x as usize] {
                     p.0 as u32
@@ -104,7 +110,7 @@ impl GfxData {
                     u32::MAX
                 }];
                 v.extend((0..puzzle_info.element_group.generator_count()).map(|y| {
-                    if let Some(p) = puzzle_info.element_group.mul_gen(Point(x), Generator(y)) {
+                    if let Some(p) = puzzle_info.element_group.mul_gen(&Point(x), &Generator(y)) {
                         p.0 as u32
                     } else {
                         u32::MAX
@@ -113,10 +119,24 @@ impl GfxData {
                 v
             })
             .collect();
-        self.puzzle_buffer = Some(self.device.create_buffer_init(
+        self.coset_buffer = Some(self.device.create_buffer_init(
             &eframe::wgpu::util::BufferInitDescriptor {
                 label: Some("It's big"),
-                contents: bytemuck::cast_slice(&puzzle_buffer),
+                contents: bytemuck::cast_slice(&coset_buffer),
+                usage: BufferUsages::STORAGE,
+            },
+        ));
+
+        self.regenerate_sticker_buffer(puzzle_info, puzzle);
+    }
+
+    pub fn regenerate_sticker_buffer(&mut self, puzzle_info: &PuzzleInfo, puzzle: &Puzzle) {
+        // LUT to get sticker colours from circle inclusion in the fundamental region
+        let sticker_buffer: Vec<u32> = get_sticker_buffer(puzzle_info, puzzle);
+        self.sticker_buffer = Some(self.device.create_buffer_init(
+            &eframe::wgpu::util::BufferInitDescriptor {
+                label: Some("It's big"),
+                contents: bytemuck::cast_slice(&sticker_buffer),
                 usage: BufferUsages::STORAGE,
             },
         ));
@@ -167,7 +187,15 @@ impl GfxData {
                     BindGroupEntry {
                         binding: 1,
                         resource: eframe::wgpu::BindingResource::Buffer(BufferBinding {
-                            buffer: self.puzzle_buffer.as_ref().expect("How did we get here?"),
+                            buffer: self.coset_buffer.as_ref().expect("How did we get here?"),
+                            offset: 0,
+                            size: None,
+                        }),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: eframe::wgpu::BindingResource::Buffer(BufferBinding {
+                            buffer: self.sticker_buffer.as_ref().expect("How did we get here?"),
                             offset: 0,
                             size: None,
                         }),
@@ -221,19 +249,21 @@ pub(crate) struct Params {
     pub mirrors: [[f32; 4]; 4],
     pub edges: [u32; 4],
     pub point: [f32; 4],
+    pub cut_circle: [f32; 4],
     pub scale: [f32; 2],
     pub col_scale: f32,
     pub depth: u32,
-    pub fundamental: u32,
-    pub col_tiles: u32,
-    pub inverse_col: u32,
+    /// fundamental = 1, col_tiles = 2, inverse_col = 4
+    pub flags: u32,
     pub mirror_count: u32,
+    padding: [f32; 2],
 }
 impl Params {
     pub fn new(
         mirrors: Vec<cga2d::Blade3>,
         edges: Vec<bool>,
         point: cga2d::Blade1,
+        cut_circle: cga2d::Blade3,
         scale: [f32; 2],
         depth: u32,
         view_settings: &ViewSettings,
@@ -248,6 +278,19 @@ impl Params {
             out_edges[i] = edges[i].into();
         }
 
+        let mut flags = 0b0;
+        if view_settings.fundamental {
+            flags |= 1
+        }
+        if view_settings.col_tiles {
+            flags |= 1 << 1
+        }
+        if view_settings.inverse_col {
+            flags |= 1 << 2
+        }
+
+        let cut_circle = rep_mirror(cut_circle);
+
         Self {
             mirrors: out_mirrors,
             edges: out_edges,
@@ -257,13 +300,13 @@ impl Params {
                 point.x as f32,
                 point.y as f32,
             ],
+            cut_circle,
             scale,
             col_scale: view_settings.col_scale,
             depth,
-            fundamental: if view_settings.fundamental { 1 } else { 0 },
-            col_tiles: if view_settings.col_tiles { 1 } else { 0 },
-            inverse_col: if view_settings.inverse_col { 1 } else { 0 },
+            flags,
             mirror_count,
+            padding: [0.; 2],
         }
     }
 }
@@ -271,6 +314,37 @@ impl Params {
 fn rep_mirror(mirror: cga2d::Blade3) -> [f32; 4] {
     let m = !mirror.normalize();
     [m.m as f32, m.p as f32, m.x as f32, m.y as f32]
+}
+
+fn get_sticker_buffer(puzzle_info: &PuzzleInfo, puzzle: &Puzzle) -> Vec<u32> {
+    let cut_circle_count = 1;
+    (0..puzzle_info.element_group.point_count())
+        .flat_map(|x| {
+            (0..(1 << cut_circle_count)).map(move |i| {
+                if i == 0 {
+                    x as u32
+                } else {
+                    // Does this have to use the attitude in element form?
+                    let word = &puzzle_info.element_group.word_table[x as usize];
+                    if let Some(attitude) = puzzle_info
+                        .element_group
+                        .mul_word(&puzzle.pieces[0].attitude, &word)
+                    {
+                        if let Some(res) = puzzle_info.element_group.mul_word(
+                            &Point::INIT,
+                            &puzzle_info.element_group.word_table[attitude.0 as usize],
+                        ) {
+                            res.0 as u32
+                        } else {
+                            u32::MAX
+                        }
+                    } else {
+                        u32::MAX
+                    }
+                }
+            })
+        })
+        .collect()
 }
 
 fn create_texture(device: &Device, size: Extent3d) -> Texture {
@@ -311,6 +385,16 @@ fn create_pipeline(device: &Device, texture_format: TextureFormat) -> RenderPipe
                         },
                         BindGroupLayoutEntry {
                             binding: 1,
+                            visibility: ShaderStages::FRAGMENT,
+                            ty: eframe::wgpu::BindingType::Buffer {
+                                ty: eframe::wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        BindGroupLayoutEntry {
+                            binding: 2,
                             visibility: ShaderStages::FRAGMENT,
                             ty: eframe::wgpu::BindingType::Buffer {
                                 ty: eframe::wgpu::BufferBindingType::Storage { read_only: true },

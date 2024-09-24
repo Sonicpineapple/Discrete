@@ -28,6 +28,15 @@ impl Mul for Word {
         Word(vec)
     }
 }
+impl Mul for &Word {
+    type Output = Word;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        let mut vec = self.0.clone();
+        vec.extend(rhs.0.clone());
+        Word(vec)
+    }
+}
 impl Mul<Word> for Generator {
     type Output = Word;
 
@@ -74,14 +83,14 @@ impl Group {
         }
     }
 
-    pub fn mul_gen(&self, point: Point, gen: Generator) -> Option<Point> {
-        self.mul_table[&(point, gen)]
+    pub fn mul_gen(&self, point: &Point, gen: &Generator) -> Option<Point> {
+        self.mul_table[&(*point, *gen)]
     }
 
-    pub fn mul_word(&self, point: Point, word: Word) -> Option<Point> {
-        let mut result = point;
-        for gen in word.0 {
-            result = self.mul_gen(result, gen)?;
+    pub fn mul_word(&self, point: &Point, word: &Word) -> Option<Point> {
+        let mut result = *point;
+        for gen in &word.0 {
+            result = self.mul_gen(&result, gen)?;
         }
         Some(result)
     }
@@ -106,7 +115,7 @@ impl fmt::Display for Group {
         for p in 0..self.point_count {
             write!(f, "P{p:_>2x} ")?;
             for g in 0..self.generator_count {
-                if let Some(q) = self.mul_gen(Point(p), Generator(g)) {
+                if let Some(q) = self.mul_gen(&Point(p), &Generator(g)) {
                     write!(f, "P{:_>2x} ", q.0)?;
                 } else {
                     write!(f, "P?? ")?;

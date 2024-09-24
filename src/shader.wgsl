@@ -1,16 +1,17 @@
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var<storage,read> puzzle: array<i32>;
+@group(0) @binding(1) var<storage,read> group: array<i32>;
+@group(0) @binding(2) var<storage,read> sticker: array<i32>;
+
 
 struct Params {
     mirrors: mat4x4<f32>,
     edges: vec4<u32>,
     point: vec4<f32>,
+    cut_circle: vec4<f32>,
     scale: vec2<f32>,
     col_scale: f32,
     depth: u32,
-    fundamental: u32,
-    col_tiles: u32,
-    inverse_col: u32,
+    flags: u32,
     mirror_count: u32,
 }
 
@@ -88,11 +89,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    if params.fundamental > 0 && k == 0 {
+    if (params.flags & 1) > 0 && k == 0 {
         return vec4(0.5,0.5,0.5,1.);
     }
 
-    if params.col_tiles == 0 || elem == -1 {
+    if (params.flags & 2) == 0 || elem == -1 {
         var dist = params.col_scale;
         for (var i = 0u; i < params.mirror_count; i++) {
             if params.edges[i] > 0u {
@@ -102,7 +103,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return turbo(dist,0.,params.col_scale);
     }
 
-    if params.inverse_col > 0 {
+    if in_circle(params.cut_circle,p) {
+        elem = get_sticker(elem,1u);
+        // return vec4(0.2,0.4,0.6,1.);
+    }
+
+    if (params.flags & 4) > 0 {
         elem = mul_elem_gen(elem,params.mirror_count-1);
     }
     return turbo(f32(get_col(elem)) / 50.,0.,params.col_scale);
@@ -111,7 +117,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
 /// Get the colour of where we started by inverting the element that gets us home
 fn get_col(elem: i32) -> i32 {
-    return puzzle[(params.mirror_count + 1) * u32(elem)];
+    return group[(params.mirror_count + 1) * u32(elem)];
 }
 
 /// Apply a generator to an element
@@ -119,7 +125,14 @@ fn mul_elem_gen(elem: i32, gen: u32) -> i32 {
     if elem == -1 {
         return elem;
     }
-    return puzzle[(params.mirror_count + 1) * u32(elem) + gen + 1];
+    return group[(params.mirror_count + 1) * u32(elem) + gen + 1];
+}
+
+fn get_sticker(elem: i32, cut_inclusion: u32) -> i32 {
+    if elem == -1 {
+        return elem;
+    }
+    return sticker[u32(elem) * 2 + cut_inclusion];
 }
 
 fn turbo(value: f32, min: f32, max: f32) -> vec4<f32> {

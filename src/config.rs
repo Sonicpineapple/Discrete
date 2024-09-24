@@ -64,6 +64,7 @@ pub(crate) struct ViewSettings {
     pub col_scale: f32,
     pub fundamental: bool,
     pub mirrors: bool,
+    pub path_debug: bool,
     pub col_tiles: bool,
     pub inverse_col: bool,
 }
@@ -73,6 +74,7 @@ impl ViewSettings {
             col_scale: 1.,
             fundamental: true,
             mirrors: true,
+            path_debug: true,
             col_tiles: false,
             inverse_col: false,
         }
@@ -110,10 +112,19 @@ impl TilingSettings {
 }
 impl Default for TilingSettings {
     fn default() -> Self {
+        // Self {
+        //     schlafli: "{7,3}".to_string(),
+        //     relations: vec!["0,2,1;8".to_string()],
+        //     subgroup: "0,1".to_string(),
+        // }
         Self {
-            schlafli: "{7,3}".to_string(),
-            relations: vec!["0,2,1;8".to_string()],
-            subgroup: "0,1".to_string(),
+            schlafli: "{6,5,3}".to_string(),
+            relations: vec![
+                "0,1;3".to_string(),
+                "1,3,2;5".to_string(),
+                "1,0,1,2,1,0,2,1,0,2,1,0,2,1,2;1".to_string(),
+            ],
+            subgroup: "0,1,2".to_string(),
         }
     }
 }
@@ -168,7 +179,7 @@ impl Tiling {
         let inverse_map: Vec<Option<Point>> = element_group
             .word_table
             .iter()
-            .map(|word| coset_group.mul_word(Point::INIT, word.inverse()))
+            .map(|word| coset_group.mul_word(&Point::INIT, &word.inverse()))
             .collect();
 
         Ok(PuzzleInfo {
