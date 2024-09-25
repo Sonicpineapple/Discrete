@@ -1,12 +1,14 @@
-use cga2d::{Blade, Multivector};
-use config::{PuzzleInfo, Schlafli, Settings, Tiling, ViewSettings};
+use cga2d::prelude::*;
+use config::{PuzzleInfo, Settings, Tiling};
+use conformal_puzzle::{ConformalPuzzle, PuzzleEditor};
 use eframe::{
     egui::{self, pos2, vec2, CollapsingHeader, Color32, Frame, Pos2, RichText, Shadow, Slider},
     epaint::PathShape,
 };
 use gfx::GfxData;
 use group::{Generator, Point, Word};
-use puzzle::Puzzle;
+use puzzle::{GripSignature, Puzzle};
+mod conformal_puzzle;
 use regex::Regex;
 
 mod config;
@@ -93,40 +95,57 @@ impl Status {
     }
 }
 
+struct Needs {
+    puzzle_regenerate: bool,
+    tiling_regenerate: bool,
+}
+impl Needs {
+    fn new() -> Self {
+        Self {
+            puzzle_regenerate: false,
+            tiling_regenerate: false,
+        }
+    }
+}
+
 struct App {
     scale: f32,
     settings: Settings,
-    tiling: Tiling,
+    // tiling: Tiling,
     gfx_data: GfxData,
     camera_transform: cga2d::Rotor,
-    puzzle_info: PuzzleInfo,
-    puzzle: Puzzle,
-    needs_regenerate: bool,
+    // puzzle_info: PuzzleInfo,
+    // puzzle: Puzzle,
+    puzzle: ConformalPuzzle,
+    needs: Needs,
     status: Status,
 }
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let gfx_data = GfxData::new(cc);
+        let mut gfx_data = GfxData::new(cc);
 
         let settings = Settings::new();
 
         let tiling = settings.tiling_settings.generate().unwrap();
 
-        let puzzle_info = tiling.get_puzzle_info(settings.tile_limit).unwrap();
-        let puzzle = Puzzle::new_anticore_only(
-            puzzle_info.element_group.clone(),
-            puzzle_info.coset_group.clone(),
-        );
+        // let puzzle_info = tiling.get_puzzle_info(settings.tile_limit).unwrap();
+        // let puzzle = Puzzle::new_anticore_only(
+        //     puzzle_info.element_group.clone(),
+        //     puzzle_info.coset_group.clone(),
+        // );
+        let puzzle = ConformalPuzzle::new(tiling, settings.tile_limit).unwrap();
+        let needs = Needs::new();
+        gfx_data.regenerate_puzzle_buffers(&puzzle);
 
         Self {
             scale: 1.,
             settings,
-            tiling,
+            // tiling,
             gfx_data,
             camera_transform: cga2d::Rotor::ident(),
-            puzzle_info,
+            // puzzle_info,
             puzzle,
-            needs_regenerate: true,
+            needs,
             status: Status::Idle,
         }
     }
@@ -149,6 +168,175 @@ impl eframe::App for App {
                     self.gfx_data.texture_id,
                     vec2(100., 100.),
                 ));
+
+                // Settings menu
+                ui.with_layer_id(
+                    egui::LayerId::new(egui::Order::Foreground, egui::Id::new("Settings")),
+                    |ui| {
+                        Frame::popup(ui.style())
+                            .outer_margin(10.)
+                            .shadow(Shadow::NONE)
+                            // .stroke(Stroke::NONE)
+                            .show(ui, |ui| {
+                                CollapsingHeader::new("Settings").show(ui, |ui| {
+                                    ui.collapsing("Tiling Settings", |ui| {
+                                        ui.horizontal(|ui| {
+                                            self.needs.tiling_regenerate |= ui
+                                                .text_edit_singleline(
+                                                    &mut self.settings.tiling_settings.schlafli,
+                                                )
+                                                .changed();
+                                            ui.label(
+                                                RichText::new("■").color(
+                                                    match Regex::new(config::SCHLAFLI_PATTERN)
+                                                        .unwrap()
+                                                        .is_match(
+                                                            &self.settings.tiling_settings.schlafli,
+                                                        ) {
+                                                        true => egui::Color32::GREEN,
+                                                        false => egui::Color32::RED,
+                                                    },
+                                                ),
+                                            );
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 0.;
+                                            for (i, val) in
+                                                self.puzzle.tiling.edges.iter_mut().enumerate()
+                                            {
+                                                if i < (self.puzzle.tiling.rank as usize) {
+                                                    ui.checkbox(val, "");
+                                                    if i < (self.puzzle.tiling.rank as usize - 1) {
+                                                        ui.label(
+                                                            self.puzzle.tiling.schlafli.0[i]
+                                                                .map_or("i".to_string(), |x| {
+                                                                    x.to_string()
+                                                                }),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        });
+                                        for rel in &mut self.settings.tiling_settings.relations {
+                                            self.needs.tiling_regenerate |=
+                                                ui.text_edit_singleline(rel).changed();
+                                        }
+                                        ui.horizontal(|ui| {
+                                            if ui.button("+").clicked() {
+                                                self.settings
+                                                    .tiling_settings
+                                                    .relations
+                                                    .push("".to_string());
+                                                self.needs.tiling_regenerate = true;
+                                            }
+                                            if ui.button("-").clicked() {
+                                                self.settings.tiling_settings.relations.pop();
+                                                self.needs.tiling_regenerate = true;
+                                            }
+                                        });
+                                        self.needs.tiling_regenerate |= ui
+                                            .text_edit_singleline(
+                                                &mut self.settings.tiling_settings.subgroup,
+                                            )
+                                            .changed();
+                                    });
+                                    ui.collapsing("View Settings", |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.add(
+                                                Slider::new(
+                                                    &mut self.settings.view_settings.col_scale,
+                                                    0.1..=2.0,
+                                                )
+                                                .logarithmic(true),
+                                            );
+                                            ui.label("Colour Scale");
+                                        });
+                                        ui.checkbox(
+                                            &mut self.settings.view_settings.fundamental,
+                                            "Draw fundamental region",
+                                        );
+                                        ui.checkbox(
+                                            &mut self.settings.view_settings.mirrors,
+                                            "Draw mirrors",
+                                        );
+                                        ui.checkbox(
+                                            &mut self.settings.view_settings.path_debug,
+                                            "Draw path",
+                                        );
+                                        ui.checkbox(
+                                            &mut self.settings.view_settings.col_tiles,
+                                            "Colour by quotient",
+                                        );
+                                        ui.checkbox(
+                                            &mut self.settings.view_settings.inverse_col,
+                                            "Colour by neighbours",
+                                        );
+                                    });
+                                    ui.collapsing("Puzzle Settings", |ui| {
+                                        if self.puzzle.editor.is_none() {
+                                            if ui.button("Edit").clicked() {
+                                                self.puzzle.set_editor(0);
+                                            }
+                                        } else {
+                                            for i in 0..self.puzzle.puzzle.piece_types.len() {
+                                                if ui.button(format!("Piece type {}", i)).clicked()
+                                                {
+                                                    self.puzzle.set_editor(i);
+                                                }
+                                            }
+                                            if ui.button("Confirm").clicked() {
+                                                self.puzzle.apply_editor();
+                                                self.gfx_data
+                                                    .regenerate_sticker_buffer(&self.puzzle);
+                                            }
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            Slider::new(&mut self.settings.depth, 1..=100)
+                                                .logarithmic(true),
+                                        );
+                                        ui.label("Iteration Depth");
+                                    });
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add(
+                                                Slider::new(
+                                                    &mut self.settings.tile_limit,
+                                                    100..=5000,
+                                                )
+                                                .logarithmic(true),
+                                            )
+                                            .changed()
+                                        {
+                                            self.needs.tiling_regenerate = true;
+                                        };
+                                        ui.label("Tile Limit");
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Reset Camera").clicked() {
+                                            self.camera_transform = cga2d::Rotor::ident();
+                                        }
+                                        self.needs.tiling_regenerate |=
+                                            ui.button("Regenerate").clicked();
+                                    });
+                                    ui.label(self.status.message());
+                                    ui.label(
+                                        self.puzzle.puzzle.grip_group.point_count().to_string(),
+                                    );
+                                    if ui.button("Move").clicked() {
+                                        if self.puzzle.apply_move(Word(vec![]), 0, false).is_err() {
+                                            self.status = Status::Invalid
+                                        } else {
+                                            self.gfx_data.regenerate_sticker_buffer(&self.puzzle);
+                                            self.status = Status::Idle
+                                        };
+                                    }
+                                })
+                            });
+                    },
+                );
 
                 let r = ui.interact(
                     egui_rect,
@@ -192,6 +380,7 @@ impl eframe::App for App {
                             let modifiers = ctx.input(|i| i.modifiers);
 
                             let ms: Vec<cga2d::Blade3> = self
+                                .puzzle
                                 .tiling
                                 .mirrors
                                 .iter()
@@ -199,7 +388,7 @@ impl eframe::App for App {
                                 .collect();
                             let boundary = match (modifiers.command, modifiers.alt) {
                                 (true, false) => {
-                                    let third = if self.tiling.rank == 4 {
+                                    let third = if self.puzzle.tiling.rank == 4 {
                                         !ms[3]
                                     } else {
                                         !(!ms[0] ^ !ms[1] ^ !ms[2])
@@ -207,7 +396,7 @@ impl eframe::App for App {
                                     !ms[1] ^ !ms[2] ^ third
                                 }
                                 (false, true) => {
-                                    let third = if self.tiling.rank == 4 {
+                                    let third = if self.puzzle.tiling.rank == 4 {
                                         !ms[3]
                                     } else {
                                         !(!ms[0] ^ !ms[1] ^ !ms[2])
@@ -228,51 +417,60 @@ impl eframe::App for App {
                     }
                 }
 
+                let camera_transform = self.camera_transform;
                 let egui_to_geom = |pos: Pos2| {
                     let Pos { x, y } = egui_to_screen(pos);
-                    self.camera_transform.rev().sandwich(cga2d::point(x, y))
+                    camera_transform.rev().sandwich(cga2d::point(x, y))
                 };
                 let geom_to_egui = |pos: cga2d::Blade1| {
-                    let (x, y) = self.camera_transform.sandwich(pos).unpack_point();
+                    let (x, y) = camera_transform.sandwich(pos).unpack_point();
                     screen_to_egui(Pos { x, y })
                 };
 
-                if self.needs_regenerate {
-                    self.puzzle = Puzzle::new_anticore_only(
-                        self.puzzle_info.element_group.clone(),
-                        self.puzzle_info.coset_group.clone(),
-                    );
-                    self.gfx_data
-                        .regenerate_puzzle_buffers(&self.puzzle_info, &self.puzzle);
-                    self.needs_regenerate = false;
+                if self.needs.tiling_regenerate {
+                    if let Ok(x) = self.settings.tiling_settings.generate() {
+                        if let Ok(puzzle) = ConformalPuzzle::new(x, self.settings.tile_limit) {
+                            self.puzzle = puzzle;
+                            self.gfx_data.regenerate_puzzle_buffers(&self.puzzle);
+                            self.status = Status::Generated;
+                        }
+                        self.needs.puzzle_regenerate = false;
+                    } else {
+                        self.status = Status::Invalid;
+                    }
+                    self.needs.tiling_regenerate = false;
                 }
-                let cut_circle;
-                {
-                    let ms: Vec<cga2d::Blade3> = self.tiling.mirrors.iter().map(|&m| m).collect();
-                    let p = (ms[0] & ms[1]);
-                    cut_circle = cga2d::slerp(
-                        ms[2],
-                        -ms[2].connect(p).connect(p),
-                        std::f64::consts::PI / 4.,
-                    );
-                    // let boundary = !ms[0] ^ !ms[1] ^ !ms[2];
-                    // let p = ms[1].sandwich(!(ms[2] & ms[1]));
-                    // cut_circle = ms[2].connect(p ^ !boundary).connect(p ^ !boundary);
+                if self.needs.puzzle_regenerate {
+                    if let Ok(puzzle) =
+                        ConformalPuzzle::new(self.puzzle.tiling.clone(), self.settings.tile_limit)
+                    {
+                        self.puzzle = puzzle;
+                        self.status = Status::Generated;
+                        self.gfx_data.regenerate_puzzle_buffers(&self.puzzle);
+                    } else {
+                        self.status = Status::Failed;
+                    };
+                    self.needs.puzzle_regenerate = false;
                 }
                 self.gfx_data.frame(
                     gfx::Params::new(
-                        self.tiling
+                        self.puzzle
+                            .tiling
                             .mirrors
                             .iter()
                             .map(|&m| self.camera_transform.sandwich(m))
                             .collect(),
-                        self.tiling.edges.clone(),
+                        self.puzzle.tiling.edges.clone(),
                         if let Some(mpos) = ctx.pointer_latest_pos() {
                             egui_to_geom(mpos)
                         } else {
                             cga2d::point(0., 1.)
                         },
-                        self.camera_transform.sandwich(cut_circle),
+                        self.puzzle
+                            .cut_circles
+                            .iter()
+                            .map(|&c| self.camera_transform.sandwich(c))
+                            .collect(),
                         scale,
                         self.settings.depth,
                         &self.settings.view_settings,
@@ -280,7 +478,9 @@ impl eframe::App for App {
                     target_size[0],
                     target_size[1],
                 );
-                image.paint_at(ui, egui_rect);
+                ui.with_layer_id(egui::LayerId::background(), |ui| {
+                    image.paint_at(ui, egui_rect);
+                });
                 // ui.put(egui_rect, image);
 
                 // debug dots
@@ -300,11 +500,12 @@ impl eframe::App for App {
                     egui::Color32::GREEN,
                     egui::Color32::BLUE,
                     egui::Color32::YELLOW,
-                    egui::Color32::GOLD,
+                    egui::Color32::KHAKI,
+                    egui::Color32::BLACK,
                 ];
                 let stroke_width = 1.;
 
-                let draw_circle = |mirror: cga2d::Blade3, col_index| {
+                let draw_circle = |mirror: cga2d::Blade3, col_index, stroke_width: f32| {
                     // Find the point pair where the mirror intersects the visible region.
                     let pp = mirror & boundary_circle;
                     if let Some(_) = pp.unpack_point_pair() {
@@ -345,16 +546,46 @@ impl eframe::App for App {
                 };
                 if self.settings.view_settings.mirrors {
                     for (i, mirror) in self
+                        .puzzle
                         .tiling
                         .mirrors
                         .iter()
-                        .chain([&cut_circle])
                         .map(|&m| self.camera_transform.sandwich(m))
                         .enumerate()
                     {
-                        draw_circle(mirror, i);
+                        draw_circle(mirror, i, stroke_width);
                     }
                 }
+                if let ConformalPuzzle {
+                    tiling,
+                    puzzle,
+                    cut_circles,
+                    editor: Some(editor),
+                    ..
+                } = &self.puzzle
+                {
+                    let stroke_width = 3.;
+                    let circ = if tiling.rank == 3 {
+                        !tiling.mirrors[0] ^ !tiling.mirrors[1] ^ cga2d::point(0.3, 0.)
+                    } else {
+                        !tiling.mirrors[0] ^ !tiling.mirrors[1] ^ !tiling.mirrors[2]
+                    };
+                    for grip in &editor.grips {
+                        let word = &puzzle.grip_group.word_table[grip.0 as usize];
+                        draw_circle(
+                            self.camera_transform
+                                .sandwich(word.0.iter().fold(circ, |c, g| {
+                                    self.puzzle.tiling.mirrors[g.0 as usize].sandwich(c)
+                                })),
+                            5,
+                            stroke_width,
+                        );
+                    }
+                    for cut in cut_circles {
+                        draw_circle(self.camera_transform.sandwich(*cut), 4, stroke_width);
+                    }
+                };
+
                 if r.is_pointer_button_down_on() {
                     if let Some(mpos) = ctx.pointer_latest_pos() {
                         //let mpos = itrans(mpos);
@@ -374,14 +605,15 @@ impl eframe::App for App {
                             //         );
                             //     }
                             // }
+
                             let mut word = Word(vec![]);
-                            let circ = !self.tiling.mirrors[0]
-                                ^ !self.tiling.mirrors[1]
-                                ^ !self.tiling.mirrors[2];
+                            let circ = !self.puzzle.tiling.mirrors[0]
+                                ^ !self.puzzle.tiling.mirrors[1]
+                                ^ !self.puzzle.tiling.mirrors[2];
                             let mut mirrored = false;
                             for _ in 0..self.settings.depth {
                                 let mut done = true;
-                                for (i, &mirror) in self.tiling.mirrors.iter().enumerate() {
+                                for (i, &mirror) in self.puzzle.tiling.mirrors.iter().enumerate() {
                                     if !(mirror ^ seed) < 0. {
                                         let new_seed = mirror.sandwich(seed);
                                         if self.settings.view_settings.path_debug {
@@ -408,191 +640,44 @@ impl eframe::App for App {
                             draw_circle(
                                 self.camera_transform.sandwich(
                                     word.inverse().0.iter().fold(circ, |c, g| {
-                                        self.tiling.mirrors[g.0 as usize].sandwich(c)
+                                        self.puzzle.tiling.mirrors[g.0 as usize].sandwich(c)
                                     }),
                                 ),
                                 4,
+                                stroke_width,
                             );
                             if ctx.input(|i| i.pointer.primary_pressed()) {
-                                if let Some(coset) = self
-                                    .puzzle_info
-                                    .coset_group
-                                    .mul_word(&Point::INIT, &word.inverse())
-                                {
-                                    let init_turn = if mirrored {
-                                        &Word(vec![Generator(1), Generator(0)])
+                                if self.puzzle.editor.is_some() {
+                                    if word.0.len() == 0 {
+                                        self.puzzle.editor.as_mut().unwrap().cut_mask =
+                                            Some(self.puzzle.get_cut_mask(seed));
                                     } else {
-                                        &Word(vec![Generator(0), Generator(1)])
-                                    };
-                                    let turn = &word * init_turn * word.inverse();
-                                    if self.puzzle.apply_move(&coset, &turn).is_err() {
+                                        if let Some(grip) = self
+                                            .puzzle
+                                            .puzzle
+                                            .grip_group
+                                            .mul_word(&Point::INIT, &word.inverse())
+                                        {
+                                            let editor = &mut self.puzzle.editor.as_mut().unwrap();
+                                            if editor.grips.contains(&grip) {
+                                                editor.grips.retain(|g| g.0 != grip.0);
+                                            } else {
+                                                editor.grips.push(grip);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    if self.puzzle.apply_move(word, 0, false).is_err() {
                                         self.status = Status::Invalid
                                     } else {
-                                        self.gfx_data.regenerate_sticker_buffer(
-                                            &self.puzzle_info,
-                                            &self.puzzle,
-                                        );
+                                        self.gfx_data.regenerate_sticker_buffer(&self.puzzle);
                                         self.status = Status::Idle
                                     };
-                                };
+                                }
                             }
                         }
                     }
                 }
-
-                // Settings menu
-                Frame::popup(ui.style())
-                    .outer_margin(10.)
-                    .shadow(Shadow::NONE)
-                    // .stroke(Stroke::NONE)
-                    .show(ui, |ui| {
-                        CollapsingHeader::new("Settings").show(ui, |ui| {
-                            let mut needs_try_regenerate = false;
-                            ui.collapsing("Tiling Settings", |ui| {
-                                ui.horizontal(|ui| {
-                                    needs_try_regenerate |= ui
-                                        .text_edit_singleline(
-                                            &mut self.settings.tiling_settings.schlafli,
-                                        )
-                                        .changed();
-                                    ui.label(
-                                        RichText::new("■").color(
-                                            match Regex::new(config::SCHLAFLI_PATTERN)
-                                                .unwrap()
-                                                .is_match(&self.settings.tiling_settings.schlafli)
-                                            {
-                                                true => egui::Color32::GREEN,
-                                                false => egui::Color32::RED,
-                                            },
-                                        ),
-                                    );
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 0.;
-                                    for (i, val) in self.tiling.edges.iter_mut().enumerate() {
-                                        if i < (self.tiling.rank as usize) {
-                                            ui.checkbox(val, "");
-                                            if i < (self.tiling.rank as usize - 1) {
-                                                ui.label(
-                                                    self.tiling.schlafli.0[i]
-                                                        .map_or("i".to_string(), |x| x.to_string()),
-                                                );
-                                            }
-                                        }
-                                    }
-                                });
-                                for rel in &mut self.settings.tiling_settings.relations {
-                                    needs_try_regenerate |= ui.text_edit_singleline(rel).changed();
-                                }
-                                ui.horizontal(|ui| {
-                                    if ui.button("+").clicked() {
-                                        self.settings
-                                            .tiling_settings
-                                            .relations
-                                            .push("".to_string());
-                                        needs_try_regenerate = true;
-                                    }
-                                    if ui.button("-").clicked() {
-                                        self.settings.tiling_settings.relations.pop();
-                                        needs_try_regenerate = true;
-                                    }
-                                });
-                                needs_try_regenerate |= ui
-                                    .text_edit_singleline(
-                                        &mut self.settings.tiling_settings.subgroup,
-                                    )
-                                    .changed();
-                            });
-                            ui.collapsing("View Settings", |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.add(
-                                        Slider::new(
-                                            &mut self.settings.view_settings.col_scale,
-                                            0.1..=2.0,
-                                        )
-                                        .logarithmic(true),
-                                    );
-                                    ui.label("Colour Scale");
-                                });
-                                ui.checkbox(
-                                    &mut self.settings.view_settings.fundamental,
-                                    "Draw fundamental region",
-                                );
-                                ui.checkbox(
-                                    &mut self.settings.view_settings.mirrors,
-                                    "Draw mirrors",
-                                );
-                                ui.checkbox(
-                                    &mut self.settings.view_settings.path_debug,
-                                    "Draw path",
-                                );
-                                ui.checkbox(
-                                    &mut self.settings.view_settings.col_tiles,
-                                    "Colour by quotient",
-                                );
-                                ui.checkbox(
-                                    &mut self.settings.view_settings.inverse_col,
-                                    "Colour by neighbours",
-                                );
-                            });
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    Slider::new(&mut self.settings.depth, 1..=100)
-                                        .logarithmic(true),
-                                );
-                                ui.label("Iteration Depth");
-                            });
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .add(
-                                        Slider::new(&mut self.settings.tile_limit, 100..=5000)
-                                            .logarithmic(true),
-                                    )
-                                    .changed()
-                                {
-                                    needs_try_regenerate = true;
-                                };
-                                ui.label("Tile Limit");
-                            });
-
-                            ui.horizontal(|ui| {
-                                if ui.button("Reset Camera").clicked() {
-                                    self.camera_transform = cga2d::Rotor::ident();
-                                }
-                                needs_try_regenerate |= ui.button("Regenerate").clicked();
-                            });
-                            if needs_try_regenerate {
-                                if let Ok(x) = self.settings.tiling_settings.generate() {
-                                    if let Ok(info) = x.get_puzzle_info(self.settings.tile_limit) {
-                                        self.puzzle_info = info;
-                                        self.status = Status::Generated;
-                                    } else {
-                                        self.status = Status::Failed;
-                                    }
-                                    self.tiling = x;
-                                    self.needs_regenerate = true;
-                                    ctx.request_repaint();
-                                } else {
-                                    self.status = Status::Invalid;
-                                }
-                            }
-                            ui.label(self.status.message());
-                            ui.label(self.puzzle_info.coset_group.point_count().to_string());
-                            if ui.button("Move").clicked() {
-                                if self
-                                    .puzzle
-                                    .apply_move(&Point(0), &Word(vec![Generator(0), Generator(1)]))
-                                    .is_err()
-                                {
-                                    self.status = Status::Invalid
-                                } else {
-                                    self.gfx_data
-                                        .regenerate_sticker_buffer(&self.puzzle_info, &self.puzzle);
-                                    self.status = Status::Idle
-                                };
-                            }
-                        })
-                    });
             });
     }
 }

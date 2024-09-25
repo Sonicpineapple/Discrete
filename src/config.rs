@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use cga2d::{Blade, Multivector};
 use regex::Regex;
 
 use crate::{
@@ -182,10 +183,21 @@ impl Tiling {
             .map(|word| coset_group.mul_word(&Point::INIT, &word.inverse()))
             .collect();
 
+        let ms: Vec<cga2d::Blade3> = self.mirrors.iter().map(|&m| m).collect();
+        let p = ms[0] & ms[1];
+        let cut_circle = -cga2d::slerp(
+            ms[2],
+            -ms[2].connect(p).connect(p),
+            std::f64::consts::PI / 6.,
+        );
+
+        let cut_circles = vec![cut_circle, (ms[1] * ms[0]).sandwich(cut_circle)];
+
         Ok(PuzzleInfo {
             element_group,
             coset_group,
             inverse_map,
+            cut_circles,
         })
     }
 }
@@ -196,6 +208,7 @@ pub(crate) struct PuzzleInfo {
     pub coset_group: Group,
     /// Map from a group element E to C0 * E' in the coset group
     pub inverse_map: Vec<Option<Point>>,
+    pub cut_circles: Vec<cga2d::Blade3>,
 }
 
 #[derive(Debug, Clone)]

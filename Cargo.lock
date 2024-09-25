@@ -677,9 +677,9 @@ checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
 name = "cga2d"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61b48160e84a02aa91e2a697e7eda6372cbbf86c894fe582cc95e5902fab3f81"
+checksum = "c4b0b1bcfdb63957348b7e9ff56884c22a86686836bd781585b87c97aff7ab36"
 dependencies = [
  "approx",
  "bitflags 2.6.0",
@@ -853,7 +853,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b28bfe653d79bd16c77f659305b195b82bb5ce0c0eb2a4846b82ddbd77586813"
 dependencies = [
  "bitflags 2.6.0",
- "libloading 0.7.4",
+ "libloading 0.8.5",
  "winapi",
 ]
 

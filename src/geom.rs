@@ -58,7 +58,7 @@ fn rank_4_last_mirror_internal(
     let mutual_perpendicular = !(mirror1 & mirror2 & mirror3);
     let temp_angle = (a3.sin() * a1.sin() / a2.cos()).asin();
     let temp_line = cga2d::slerp(mirror1, !mutual_perpendicular ^ !mirror1 ^ NO, -temp_angle);
-    let vertex_3_4 = (temp_line & mirror3).unpack_point_pair().ok_or(())?[1];
+    let vertex_3_4 = (temp_line & mirror3).unpack_point_pair().ok_or(())?[0];
     let mirror4 = !mirror1 ^ !mirror2 ^ vertex_3_4;
-    Ok(mirror4.normalize())
+    Ok(-mirror4.normalize())
 }

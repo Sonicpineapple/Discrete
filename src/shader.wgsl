@@ -5,9 +5,9 @@
 
 struct Params {
     mirrors: mat4x4<f32>,
+    cut_circles: mat2x4<f32>,
     edges: vec4<u32>,
     point: vec4<f32>,
-    cut_circle: vec4<f32>,
     scale: vec2<f32>,
     col_scale: f32,
     depth: u32,
@@ -88,6 +88,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             break;
         }
     }
+    for (var j: u32 = 0u; j < params.mirror_count; j++) {
+        if !in_circle(params.mirrors[j],p) {
+            return vec4(0.1,0.1,0.1,1);
+        }
+    }
+
 
     if (params.flags & 1) > 0 && k == 0 {
         return vec4(0.5,0.5,0.5,1.);
@@ -103,10 +109,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return turbo(dist,0.,params.col_scale);
     }
 
-    if in_circle(params.cut_circle,p) {
-        elem = get_sticker(elem,1u);
-        // return vec4(0.2,0.4,0.6,1.);
+    var mask = 0u;
+    for (var i: u32 = 0; i < 2; i++) {
+        if in_circle(params.cut_circles[i],p) {
+            mask += u32(1u<<i);
+        }
     }
+    elem = get_sticker(elem, mask);
 
     if (params.flags & 4) > 0 {
         elem = mul_elem_gen(elem,params.mirror_count-1);
@@ -132,7 +141,7 @@ fn get_sticker(elem: i32, cut_inclusion: u32) -> i32 {
     if elem == -1 {
         return elem;
     }
-    return sticker[u32(elem) * 2 + cut_inclusion];
+    return sticker[u32(elem) * (1u<<2u) + cut_inclusion];
 }
 
 fn turbo(value: f32, min: f32, max: f32) -> vec4<f32> {
