@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cga2d::{Blade, Multivector};
+use cga2d::Multivector;
 use eframe::{
     egui::{mutex::RwLock, TextureId},
     egui_wgpu::Renderer,
@@ -20,8 +20,6 @@ use crate::{
     config::ViewSettings,
     conformal_puzzle::ConformalPuzzle,
     group::{Generator, Point},
-    puzzle::Puzzle,
-    PuzzleInfo,
 };
 
 pub(crate) struct GfxData {
@@ -34,6 +32,8 @@ pub(crate) struct GfxData {
     pub param_buffer: Buffer,
     pub coset_buffer: Option<Buffer>,
     pub sticker_buffer: Option<Buffer>,
+    pub cut_buffer: Option<Buffer>,
+    pub outline_buffer: Option<Buffer>,
     pub renderer: Arc<RwLock<Renderer>>,
 }
 impl GfxData {
@@ -84,6 +84,8 @@ impl GfxData {
 
         let coset_buffer = None;
         let sticker_buffer = None;
+        let cut_buffer = None;
+        let outline_buffer = None;
 
         GfxData {
             device,
@@ -95,21 +97,29 @@ impl GfxData {
             param_buffer,
             coset_buffer,
             sticker_buffer,
+            cut_buffer,
+            outline_buffer,
             renderer,
         }
     }
 
-    pub fn regenerate_puzzle_buffers(&mut self, puzzle: &ConformalPuzzle) {
+    pub fn regenerate_puzzle_buffers(
+        &mut self,
+        camera_transform: cga2d::Rotoflector,
+        puzzle: &ConformalPuzzle,
+    ) {
         // Generate puzzle buffer (TODO: only when changed)
 
         // LUT to multiply group elements and find C0*E' from E
         let coset_buffer: Vec<u32> = (0..puzzle.puzzle.elem_group.point_count())
             .flat_map(|x| {
-                let mut v = vec![if let Some(p) = puzzle.inverse_map[x as usize] {
-                    p.0 as u32
-                } else {
-                    u32::MAX
-                }];
+                let mut v = vec![
+                    if let Some(p) = puzzle.quotient_group.inverse_map[x as usize] {
+                        p.0 as u32
+                    } else {
+                        u32::MAX
+                    },
+                ];
                 v.extend((0..puzzle.puzzle.elem_group.generator_count()).map(|y| {
                     if let Some(p) = puzzle.puzzle.elem_group.mul_gen(&Point(x), &Generator(y)) {
                         p.0 as u32
@@ -128,7 +138,38 @@ impl GfxData {
             },
         ));
 
+        self.regenerate_cut_buffer(camera_transform, puzzle);
         self.regenerate_sticker_buffer(puzzle);
+    }
+
+    pub fn regenerate_cut_buffer(
+        &mut self,
+        camera_transform: cga2d::Rotoflector,
+        puzzle: &ConformalPuzzle,
+    ) {
+        let cut_buffer = get_cut_buffer(camera_transform, puzzle);
+        self.cut_buffer = Some(self.device.create_buffer_init(
+            &eframe::wgpu::util::BufferInitDescriptor {
+                label: Some("It's small"),
+                contents: bytemuck::cast_slice(&cut_buffer),
+                usage: BufferUsages::STORAGE,
+            },
+        ));
+    }
+
+    pub fn regenerate_outline_buffer(
+        &mut self,
+        camera_transform: cga2d::Rotoflector,
+        outlines: &Vec<cga2d::Blade3>,
+    ) {
+        let outline_buffer = get_outline_buffer(camera_transform, &outlines);
+        self.outline_buffer = Some(self.device.create_buffer_init(
+            &eframe::wgpu::util::BufferInitDescriptor {
+                label: Some("It's small"),
+                contents: bytemuck::cast_slice(&outline_buffer),
+                usage: BufferUsages::STORAGE,
+            },
+        ))
     }
 
     pub fn regenerate_sticker_buffer(&mut self, puzzle: &ConformalPuzzle) {
@@ -201,6 +242,22 @@ impl GfxData {
                             size: None,
                         }),
                     },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: eframe::wgpu::BindingResource::Buffer(BufferBinding {
+                            buffer: self.cut_buffer.as_ref().expect("How did we get here?"),
+                            offset: 0,
+                            size: None,
+                        }),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: eframe::wgpu::BindingResource::Buffer(BufferBinding {
+                            buffer: self.outline_buffer.as_ref().expect("How did we get here?"),
+                            offset: 0,
+                            size: None,
+                        }),
+                    },
                 ],
             });
             let mut render_pass = ce.begin_render_pass(&RenderPassDescriptor {
@@ -248,24 +305,26 @@ impl VertexInput {
 #[repr(C)]
 pub(crate) struct Params {
     pub mirrors: [[f32; 4]; 4],
-    pub cut_circles: [[f32; 4]; 2],
     pub edges: [u32; 4],
     pub point: [f32; 4],
     pub scale: [f32; 2],
+    pub cut_circle_count: u32,
+    pub outline_count: u32,
     pub col_scale: f32,
     pub depth: u32,
     /// fundamental = 1, col_tiles = 2, inverse_col = 4
     pub flags: u32,
     pub mirror_count: u32,
-    padding: [f32; 2],
+    padding: [f32; 1],
 }
 impl Params {
     pub fn new(
         mirrors: Vec<cga2d::Blade3>,
         edges: Vec<bool>,
         point: cga2d::Blade1,
-        cut_circles: Vec<cga2d::Blade3>,
         scale: [f32; 2],
+        cut_circle_count: usize,
+        outline_count: usize,
         depth: u32,
         view_settings: &ViewSettings,
     ) -> Self {
@@ -290,11 +349,8 @@ impl Params {
             flags |= 1 << 2
         }
 
-        let cut_circles = [rep_mirror(cut_circles[0]), rep_mirror(cut_circles[1])];
-
         Self {
             mirrors: out_mirrors,
-            cut_circles,
             edges: out_edges,
             point: [
                 point.m as f32,
@@ -303,11 +359,13 @@ impl Params {
                 point.y as f32,
             ],
             scale,
+            cut_circle_count: cut_circle_count as u32,
+            outline_count: outline_count as u32,
             col_scale: view_settings.col_scale,
             depth,
             flags,
             mirror_count,
-            padding: [0.; 2],
+            padding: [0.; 1],
         }
     }
 }
@@ -318,10 +376,9 @@ fn rep_mirror(mirror: cga2d::Blade3) -> [f32; 4] {
 }
 
 fn get_sticker_buffer(puzzle: &ConformalPuzzle) -> Vec<u32> {
-    let cut_circle_count = 2;
     (0..puzzle.puzzle.elem_group.point_count())
         .flat_map(|x| {
-            (0..(1 << cut_circle_count)).map(move |i| {
+            (0..(1 << puzzle.cut_circles.len())).map(move |i| {
                 if i < puzzle.cut_map.len() {
                     if let Some(i) = puzzle.cut_map[i] {
                         if i < puzzle.puzzle.piece_types.len() {
@@ -352,6 +409,24 @@ fn get_sticker_buffer(puzzle: &ConformalPuzzle) -> Vec<u32> {
                 x as u32
             })
         })
+        .collect()
+}
+
+fn get_cut_buffer(camera_transform: cga2d::Rotoflector, puzzle: &ConformalPuzzle) -> Vec<[f32; 4]> {
+    puzzle
+        .cut_circles
+        .iter()
+        .map(|&c| rep_mirror(camera_transform.sandwich(c)))
+        .collect()
+}
+
+fn get_outline_buffer(
+    camera_transform: cga2d::Rotoflector,
+    outlines: &Vec<cga2d::Blade3>,
+) -> Vec<[f32; 4]> {
+    outlines
+        .iter()
+        .map(|&c| rep_mirror(camera_transform.sandwich(c)))
         .collect()
 }
 
@@ -403,6 +478,26 @@ fn create_pipeline(device: &Device, texture_format: TextureFormat) -> RenderPipe
                         },
                         BindGroupLayoutEntry {
                             binding: 2,
+                            visibility: ShaderStages::FRAGMENT,
+                            ty: eframe::wgpu::BindingType::Buffer {
+                                ty: eframe::wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: ShaderStages::FRAGMENT,
+                            ty: eframe::wgpu::BindingType::Buffer {
+                                ty: eframe::wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        BindGroupLayoutEntry {
+                            binding: 4,
                             visibility: ShaderStages::FRAGMENT,
                             ty: eframe::wgpu::BindingType::Buffer {
                                 ty: eframe::wgpu::BufferBindingType::Storage { read_only: true },

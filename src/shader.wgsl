@@ -1,14 +1,17 @@
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage,read> group: array<i32>;
 @group(0) @binding(2) var<storage,read> sticker: array<i32>;
+@group(0) @binding(3) var<storage,read> cut_circles: array<vec4<f32>>;
+@group(0) @binding(4) var<storage,read> outlines: array<vec4<f32>>;
 
 
 struct Params {
     mirrors: mat4x4<f32>,
-    cut_circles: mat2x4<f32>,
     edges: vec4<u32>,
     point: vec4<f32>,
     scale: vec2<f32>,
+    cut_circle_count: u32,
+    outline_count: u32,
     col_scale: f32,
     depth: u32,
     flags: u32,
@@ -51,25 +54,24 @@ fn down(p: vec4<f32>) -> vec2<f32> {
 
 struct VertexInput {
     @location(0) position: vec2<f32>,
-    @location(1) color: vec4<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) pos: vec4<f32>,
 }
 
 @vertex
 fn vertex(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.position = vec4(in.position, 0.0, 1.0);
-    out.color = vec4(in.position * params.scale, 0.0, 1.0);
+    out.pos = vec4(in.position * params.scale, 0.0, 1.0);
     return out;
 }
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    var p = up(in.color.xy);
+    var p = up(in.pos.xy);
     var q = params.point;
 
     var elem = 0;
@@ -109,9 +111,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return turbo(dist,0.,params.col_scale);
     }
 
+    for (var o: u32 = 0; o < params.outline_count; o++) {
+        if in_circle(outlines[o], p) {
+            return vec4(0.,0.,0.,1.);
+        }
+    }
+
     var mask = 0u;
-    for (var i: u32 = 0; i < 2; i++) {
-        if in_circle(params.cut_circles[i],p) {
+    for (var i: u32 = 0; i < params.cut_circle_count; i++) {
+        if in_circle(cut_circles[i],p) {
             mask += u32(1u<<i);
         }
     }
@@ -120,6 +128,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if (params.flags & 4) > 0 {
         elem = mul_elem_gen(elem,params.mirror_count-1);
     }
+
     return turbo(f32(get_col(elem)) / 50.,0.,params.col_scale);
     // return turbo(f32(elem) / 20.,0.,params.col_scale);
 }
@@ -141,7 +150,7 @@ fn get_sticker(elem: i32, cut_inclusion: u32) -> i32 {
     if elem == -1 {
         return elem;
     }
-    return sticker[u32(elem) * (1u<<2u) + cut_inclusion];
+    return sticker[u32(elem) * (1u<<params.cut_circle_count) + cut_inclusion];
 }
 
 fn turbo(value: f32, min: f32, max: f32) -> vec4<f32> {
@@ -153,9 +162,9 @@ fn turbo(value: f32, min: f32, max: f32) -> vec4<f32> {
     let kBlueVec2: vec2<f32> = vec2(-89.90310912, 27.34824973);
 
     let x = saturate((value - min) / (max - min));
-    if abs(x) < 0.51 && abs(x) > 0.49 {
-        return vec4(1.0, 1.0, 1.0, 1.0);
-    }
+    // if abs(x) < 0.51 && abs(x) > 0.49 {
+    //     return vec4(1.0, 1.0, 1.0, 1.0);
+    // }
     let v4: vec4<f32> = vec4( 1.0, x, x * x, x * x * x);
     let v2: vec2<f32> = v4.zw * v4.z;
     return vec4(

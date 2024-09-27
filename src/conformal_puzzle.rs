@@ -1,72 +1,89 @@
-use std::ops::Index;
+use std::sync::Arc;
 
 use crate::{
-    config::{PuzzleInfo, Tiling},
     group::{Generator, Point, Word},
     puzzle::{GripSignature, Puzzle},
+    tiling::{QuotientGroup, Tiling},
 };
 use cga2d::prelude::*;
 
 pub(crate) struct ConformalPuzzle {
     pub puzzle: Puzzle,
-    pub tiling: Tiling,
+    pub tiling: Arc<Tiling>,
+    pub quotient_group: Arc<QuotientGroup>,
     pub base_twists: Vec<Word>,
-    pub inverse_map: Vec<Option<Point>>,
     pub cut_circles: Vec<cga2d::Blade3>,
     pub cut_map: Vec<Option<usize>>,
     pub editor: Option<PuzzleEditor>,
 }
 impl ConformalPuzzle {
-    pub fn new(tiling: Tiling, tile_limit: u32) -> Result<Self, ()> {
-        let puzzle_info = tiling.get_puzzle_info(tile_limit)?;
-        let piece_types = vec![
-            GripSignature(vec![
-                Point::INIT,
-                puzzle_info
-                    .coset_group
-                    .mul_word(&Point::INIT, &Word(vec![Generator(0), Generator(2)]))
-                    .unwrap(),
-            ]),
-            GripSignature(vec![
-                Point::INIT,
-                puzzle_info
-                    .coset_group
-                    .mul_word(&Point::INIT, &Word(vec![Generator(1), Generator(2)]))
-                    .unwrap(),
-                puzzle_info
-                    .coset_group
-                    .mul_word(
-                        &Point::INIT,
-                        &Word(vec![Generator(1), Generator(2), Generator(1), Generator(2)]),
-                    )
-                    .unwrap(),
-            ]),
-        ];
+    // pub fn new(tiling: Arc<Tiling>, tile_limit: u32) -> Result<Self, ()> {
+    //     let puzzle_info = tiling.get_puzzle_info(tile_limit)?;
+    //     let piece_types = vec![
+    //         GripSignature(vec![
+    //             Point::INIT,
+    //             puzzle_info
+    //                 .coset_group
+    //                 .mul_word(&Point::INIT, &Word(vec![Generator(0), Generator(2)]))
+    //                 .unwrap(),
+    //         ]),
+    //         GripSignature(vec![
+    //             Point::INIT,
+    //             puzzle_info
+    //                 .coset_group
+    //                 .mul_word(&Point::INIT, &Word(vec![Generator(1), Generator(2)]))
+    //                 .unwrap(),
+    //             puzzle_info
+    //                 .coset_group
+    //                 .mul_word(
+    //                     &Point::INIT,
+    //                     &Word(vec![Generator(1), Generator(2), Generator(1), Generator(2)]),
+    //                 )
+    //                 .unwrap(),
+    //         ]),
+    //     ];
+    //     let puzzle = Puzzle::new(
+    //         puzzle_info.element_group,
+    //         puzzle_info.coset_group,
+    //         piece_types,
+    //     )?;
+    //     // let puzzle = Puzzle::new_anticore_only(
+    //     //     puzzle_info.element_group.clone(),
+    //     //     puzzle_info.coset_group.clone(),
+    //     // );
+    //     let cut_map = (0..1 << cut_circles.len())
+    //         .map(|i| if i < 2 { Some(i) } else { None })
+    //         .collect();
+
+    //     let inverse_map = puzzle_info.inverse_map;
+    //     let base_twists = vec![Word(vec![Generator(0), Generator(1)])];
+
+    //     Ok(Self {
+    //         puzzle,
+    //         tiling,
+    //         base_twists,
+    //         inverse_map,
+    //         cut_circles,
+    //         cut_map,
+    //         editor: None,
+    //     })
+    // }
+
+    fn from_definition(definition: &PuzzleDefinition) -> Result<Self, ()> {
+        let quotient_group = definition.quotient_group.clone();
         let puzzle = Puzzle::new(
-            puzzle_info.element_group,
-            puzzle_info.coset_group,
-            piece_types,
+            quotient_group.element_group.clone(),
+            quotient_group.tile_group.clone(),
+            definition.piece_types.clone(),
         )?;
-        // let puzzle = Puzzle::new_anticore_only(
-        //     puzzle_info.element_group.clone(),
-        //     puzzle_info.coset_group.clone(),
-        // );
-
-        let cut_circles = puzzle_info.cut_circles;
-        let cut_map = (0..1 << cut_circles.len())
-            .map(|i| if i < 2 { Some(i) } else { None })
-            .collect();
-
-        let inverse_map = puzzle_info.inverse_map;
         let base_twists = vec![Word(vec![Generator(0), Generator(1)])];
-
         Ok(Self {
             puzzle,
-            tiling,
+            tiling: definition.tiling.clone(),
+            quotient_group,
             base_twists,
-            inverse_map,
-            cut_circles,
-            cut_map,
+            cut_circles: definition.cut_circles.clone(),
+            cut_map: definition.cut_map.clone(),
             editor: None,
         })
     }
@@ -126,40 +143,66 @@ impl ConformalPuzzle {
             }
         })
     }
-
-    pub fn set_editor(&mut self, piece_type: usize) {
-        self.editor = Some(PuzzleEditor {
-            piece_type,
-            grips: self.puzzle.piece_types[piece_type].0.clone(),
-            cut_mask: self.cut_map[piece_type],
-        });
-    }
-
-    pub fn apply_editor(&mut self) -> Result<(), ()> {
-        let Self {
-            puzzle,
-            cut_map,
-            editor,
-            ..
-        } = self;
-        if let Some(editor) = editor {
-            puzzle.piece_types[editor.piece_type].0 = editor.grips.clone();
-            if let Some(cut_mask) = editor.cut_mask {
-                if cut_map[cut_mask].is_some() {
-                    cut_map[cut_mask] = None;
-                } else {
-                    cut_map[cut_mask] = Some(editor.piece_type);
-                }
-            }
-        }
-        *editor = None;
-        self.regenerate_puzzle()
-    }
 }
 
 /// Intermediate information for editing piece types
 pub struct PuzzleEditor {
-    pub piece_type: usize,
-    pub grips: Vec<Point>,
-    pub cut_mask: Option<usize>,
+    pub active_piece_type: Option<usize>,
+    pub puzzle_def: PuzzleDefinition,
+}
+impl PuzzleEditor {
+    pub fn new(puzzle_def: PuzzleDefinition) -> Self {
+        Self {
+            active_piece_type: None,
+            puzzle_def,
+        }
+    }
+}
+
+pub struct PuzzleDefinition {
+    pub tiling: Arc<Tiling>,
+    pub quotient_group: Arc<QuotientGroup>,
+    pub piece_types: Vec<GripSignature>,
+    pub cut_circles: Vec<cga2d::Blade3>,
+    pub cut_map: Vec<Option<usize>>,
+}
+impl PuzzleDefinition {
+    pub fn new(tiling: Arc<Tiling>, quotient_group: Arc<QuotientGroup>) -> Self {
+        let piece_types = vec![GripSignature(vec![Point::INIT])];
+
+        let ms = &tiling.mirrors;
+        let p = ms[0] & ms[1];
+        let cut_circle = -cga2d::slerp(
+            ms[2],
+            -ms[2].connect(p).connect(p),
+            std::f64::consts::PI / 6.,
+        );
+
+        let cut_circles = vec![cut_circle, (ms[1] * ms[0]).sandwich(cut_circle)];
+        let cut_map = (0..1 << cut_circles.len())
+            .map(|i| if i < 1 { Some(i) } else { None })
+            .collect();
+
+        Self {
+            tiling,
+            quotient_group,
+            piece_types,
+            cut_circles,
+            cut_map,
+        }
+    }
+
+    pub fn generate_puzzle(&self) -> Result<ConformalPuzzle, ()> {
+        ConformalPuzzle::from_definition(self)
+    }
+
+    pub fn get_cut_mask(&self, point: cga2d::Blade1) -> usize {
+        self.cut_circles.iter().enumerate().fold(0, |m, (i, c)| {
+            if !(*c ^ point) > 0. {
+                m + (1 << i)
+            } else {
+                m
+            }
+        })
+    }
 }

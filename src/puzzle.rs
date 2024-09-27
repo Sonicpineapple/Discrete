@@ -99,6 +99,8 @@ pub(crate) struct Piece {
 #[derive(Debug, Clone)]
 pub(crate) struct GripSignature(pub Vec<Point>);
 impl GripSignature {
+    pub const CORE: Self = Self(vec![]);
+
     pub fn contains(&self, grip: &Point) -> bool {
         self.0.contains(grip)
     }

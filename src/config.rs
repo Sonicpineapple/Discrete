@@ -1,12 +1,10 @@
 use std::str::FromStr;
 
-use cga2d::{Blade, Multivector};
 use regex::Regex;
 
 use crate::{
     geom::{rank_3_mirrors, rank_4_mirrors},
-    group::{Group, Point},
-    todd_coxeter::{get_coset_table, get_element_table},
+    tiling::Tiling,
 };
 
 pub(crate) const RELATION_PATTERN: &'static str = r"^(\d\s*(?:,\s*\d\s*)*);\s*(\d+)\s*$";
@@ -42,6 +40,9 @@ pub(crate) fn parse_relation(string: &str) -> Result<Vec<u8>, ()> {
 }
 
 pub(crate) fn parse_subgroup(string: &str) -> Result<Vec<u8>, ()> {
+    if string.is_empty() {
+        return Ok(vec![]);
+    }
     let r = Regex::new(&SUBGROUP_PATTERN).unwrap();
 
     if let Some(s) = r.captures(string.trim()) {
@@ -68,6 +69,7 @@ pub(crate) struct ViewSettings {
     pub path_debug: bool,
     pub col_tiles: bool,
     pub inverse_col: bool,
+    pub outline_thickness: f32,
 }
 impl ViewSettings {
     pub fn new() -> Self {
@@ -78,6 +80,7 @@ impl ViewSettings {
             path_debug: true,
             col_tiles: false,
             inverse_col: false,
+            outline_thickness: 0.5,
         }
     }
 }
@@ -131,87 +134,6 @@ impl Default for TilingSettings {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Tiling {
-    pub rank: u8,
-    pub schlafli: Schlafli,
-    pub mirrors: Vec<cga2d::Blade3>,
-    pub edges: Vec<bool>,
-
-    pub relations: Vec<Vec<u8>>,
-    pub subgroup: Vec<u8>,
-}
-impl Tiling {
-    pub fn from_settings(tiling_settings: &TilingSettings) -> Result<Self, ()> {
-        let schlafli = Schlafli::from_str(&tiling_settings.schlafli)?;
-        let rank = schlafli.rank();
-        let mut relations = schlafli.get_rels();
-        let mut x: Vec<Vec<u8>> = tiling_settings
-            .relations
-            .iter()
-            .map(|r| parse_relation(r))
-            .collect::<Result<_, ()>>()?;
-        if !x.iter().all(|r| r.iter().all(|&g| g < rank)) {
-            return Err(());
-        };
-        relations.append(&mut x);
-        let subgroup = parse_subgroup(&tiling_settings.subgroup)?
-            .iter()
-            .map(|&x| if x <= schlafli.rank() { Ok(x) } else { Err(()) })
-            .collect::<Result<_, ()>>()?;
-
-        let mirrors = schlafli.get_mirrors()?;
-
-        Ok(Self {
-            rank,
-            schlafli: schlafli,
-            mirrors,
-            edges: vec![false, false, true, false],
-            relations,
-            subgroup,
-        })
-    }
-
-    pub fn get_puzzle_info(&self, tile_limit: u32) -> Result<PuzzleInfo, ()> {
-        let rels = &self.relations;
-        let element_group = get_element_table(self.rank as usize, &rels, tile_limit);
-        let coset_group = get_coset_table(self.rank as usize, &rels, &self.subgroup, tile_limit);
-
-        // Inverse Element -> Coset
-        let inverse_map: Vec<Option<Point>> = element_group
-            .word_table
-            .iter()
-            .map(|word| coset_group.mul_word(&Point::INIT, &word.inverse()))
-            .collect();
-
-        let ms: Vec<cga2d::Blade3> = self.mirrors.iter().map(|&m| m).collect();
-        let p = ms[0] & ms[1];
-        let cut_circle = -cga2d::slerp(
-            ms[2],
-            -ms[2].connect(p).connect(p),
-            std::f64::consts::PI / 6.,
-        );
-
-        let cut_circles = vec![cut_circle, (ms[1] * ms[0]).sandwich(cut_circle)];
-
-        Ok(PuzzleInfo {
-            element_group,
-            coset_group,
-            inverse_map,
-            cut_circles,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PuzzleInfo {
-    pub element_group: Group,
-    pub coset_group: Group,
-    /// Map from a group element E to C0 * E' in the coset group
-    pub inverse_map: Vec<Option<Point>>,
-    pub cut_circles: Vec<cga2d::Blade3>,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct Schlafli(pub Vec<Option<usize>>);
 impl Schlafli {
     pub fn new(rank: u8) -> Self {
@@ -222,7 +144,7 @@ impl Schlafli {
         }
     }
 
-    fn get_rels(&self) -> Vec<Vec<u8>> {
+    pub fn get_rels(&self) -> Vec<Vec<u8>> {
         let mut rels = vec![];
         for (i, &val) in self.0.iter().enumerate() {
             for x in 0..i {
@@ -235,7 +157,7 @@ impl Schlafli {
         rels
     }
 
-    fn get_mirrors(&self) -> Result<Vec<cga2d::Blade3>, ()> {
+    pub fn get_mirrors(&self) -> Result<Vec<cga2d::Blade3>, ()> {
         Ok(match self.rank() {
             3 => rank_3_mirrors(self.0[0], self.0[1])?.to_vec(),
             4 => rank_4_mirrors(self.0[0], self.0[1], self.0[2])?.to_vec(),

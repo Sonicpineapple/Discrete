@@ -22,7 +22,10 @@ pub(crate) fn rank_4_mirrors(
     let a3 = angle(c);
     let [m1, m2, m3] = rank_3_mirrors_internal(a1, a2)?;
     let m4 = rank_4_last_mirror_internal(m1, m2, m3, a1, a2, a3)?;
-    Ok([m1, m2, m3, m4])
+    // We generate the world "backwards", so invert everyone first
+    let mut mirrors = [m1, m2, m3, m4];
+    mirrors.iter_mut().for_each(|m| *m = -(m4).sandwich(*m));
+    Ok(mirrors)
 }
 
 fn rank_3_mirrors_internal(a1: f64, a2: f64) -> Result<[Blade3; 3], ()> {
@@ -57,8 +60,8 @@ fn rank_4_last_mirror_internal(
 ) -> Result<Blade3, ()> {
     let mutual_perpendicular = !(mirror1 & mirror2 & mirror3);
     let temp_angle = (a3.sin() * a1.sin() / a2.cos()).asin();
-    let temp_line = cga2d::slerp(mirror1, !mutual_perpendicular ^ !mirror1 ^ NO, -temp_angle);
-    let vertex_3_4 = (temp_line & mirror3).unpack_point_pair().ok_or(())?[0];
+    let temp_line = cga2d::slerp(mirror1, !mutual_perpendicular ^ !mirror1 ^ NO, temp_angle);
+    let vertex_3_4 = (temp_line & mirror3).unpack_point_pair().ok_or(())?[1];
     let mirror4 = !mirror1 ^ !mirror2 ^ vertex_3_4;
-    Ok(-mirror4.normalize())
+    Ok(mirror4.normalize())
 }
