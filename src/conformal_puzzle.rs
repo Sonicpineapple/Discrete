@@ -12,7 +12,7 @@ pub(crate) struct ConformalPuzzle {
     pub tiling: Arc<Tiling>,
     pub quotient_group: Arc<QuotientGroup>,
     pub base_twists: Vec<Word>,
-    pub cut_circles: Vec<cga2d::Blade3>,
+    pub cut_circles: Vec<cga2d::Blade1>,
     pub cut_map: Vec<Option<usize>>,
     pub editor: Option<PuzzleEditor>,
 }
@@ -135,8 +135,8 @@ impl ConformalPuzzle {
     }
 
     pub fn get_cut_mask(&self, point: cga2d::Blade1) -> usize {
-        self.cut_circles.iter().enumerate().fold(0, |m, (i, c)| {
-            if !(*c ^ point) > 0. {
+        self.cut_circles.iter().enumerate().fold(0, |m, (i, &c)| {
+            if !(!c ^ point) > 0. {
                 m + (1 << i)
             } else {
                 m
@@ -163,7 +163,7 @@ pub struct PuzzleDefinition {
     pub tiling: Arc<Tiling>,
     pub quotient_group: Arc<QuotientGroup>,
     pub piece_types: Vec<GripSignature>,
-    pub cut_circles: Vec<cga2d::Blade3>,
+    pub cut_circles: Vec<cga2d::Blade1>,
     pub cut_map: Vec<Option<usize>>,
 }
 impl PuzzleDefinition {
@@ -171,12 +171,8 @@ impl PuzzleDefinition {
         let piece_types = vec![GripSignature(vec![Point::INIT])];
 
         let ms = &tiling.mirrors;
-        let p = ms[0] & ms[1];
-        let cut_circle = -cga2d::slerp(
-            ms[2],
-            -ms[2].connect(p).connect(p),
-            std::f64::consts::PI / 6.,
-        );
+        let p = !(ms[0] ^ ms[1]);
+        let cut_circle = -cga2d::slerp(ms[2], -!(ms[2] ^ p).connect(p), std::f64::consts::PI / 6.);
 
         let cut_circles = vec![cut_circle, (ms[1] * ms[0]).sandwich(cut_circle)];
         let cut_map = (0..1 << cut_circles.len())
@@ -197,8 +193,8 @@ impl PuzzleDefinition {
     }
 
     pub fn get_cut_mask(&self, point: cga2d::Blade1) -> usize {
-        self.cut_circles.iter().enumerate().fold(0, |m, (i, c)| {
-            if !(*c ^ point) > 0. {
+        self.cut_circles.iter().enumerate().fold(0, |m, (i, &c)| {
+            if !(c.antidual() ^ point) > 0. {
                 m + (1 << i)
             } else {
                 m

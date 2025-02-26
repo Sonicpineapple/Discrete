@@ -11,10 +11,10 @@ use eframe::{
         Device, Extent3d, FragmentState, MultisampleState, Operations, PipelineCompilationOptions,
         PipelineLayoutDescriptor, PrimitiveState, Queue, RenderPassColorAttachment,
         RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderStages, Texture,
-        TextureDescriptor, TextureUsages, TextureViewDescriptor, VertexBufferLayout, VertexState,
+        TextureDescriptor, TextureFormat, TextureUsages, TextureViewDescriptor, VertexBufferLayout,
+        VertexState,
     },
 };
-use wgpu::TextureFormat;
 
 use crate::{
     config::ViewSettings,
@@ -103,11 +103,7 @@ impl GfxData {
         }
     }
 
-    pub fn regenerate_puzzle_buffers(
-        &mut self,
-        camera_transform: cga2d::Rotoflector,
-        puzzle: &ConformalPuzzle,
-    ) {
+    pub fn regenerate_puzzle_buffers(&mut self, puzzle: &ConformalPuzzle) {
         // Generate puzzle buffer (TODO: only when changed)
 
         // LUT to multiply group elements and find C0*E' from E
@@ -138,7 +134,6 @@ impl GfxData {
             },
         ));
 
-        self.regenerate_cut_buffer(camera_transform, puzzle);
         self.regenerate_sticker_buffer(puzzle);
     }
 
@@ -160,7 +155,7 @@ impl GfxData {
     pub fn regenerate_outline_buffer(
         &mut self,
         camera_transform: cga2d::Rotoflector,
-        outlines: &Vec<cga2d::Blade3>,
+        outlines: &Vec<cga2d::Blade1>,
     ) {
         let outline_buffer = get_outline_buffer(camera_transform, &outlines);
         self.outline_buffer = Some(self.device.create_buffer_init(
@@ -184,7 +179,15 @@ impl GfxData {
         ));
     }
 
-    pub fn frame(&mut self, params: Params, width: u32, height: u32) {
+    pub fn frame(
+        &mut self,
+        params: Params,
+        width: u32,
+        height: u32,
+        camera_transform: cga2d::Rotoflector,
+        puzzle: &Option<ConformalPuzzle>,
+        outlines: &Vec<cga2d::Blade1>,
+    ) {
         // Resize texture if it needs to
         let new_size = Extent3d {
             width,
@@ -200,6 +203,12 @@ impl GfxData {
                 self.texture_id,
             );
         }
+
+        // Make sure we do these
+        if let Some(puzzle) = puzzle {
+            self.regenerate_cut_buffer(camera_transform, puzzle);
+        }
+        self.regenerate_outline_buffer(camera_transform, outlines);
 
         // Write params to the buffer
         self.queue
@@ -315,11 +324,12 @@ pub(crate) struct Params {
     /// fundamental = 1, col_tiles = 2, inverse_col = 4
     pub flags: u32,
     pub mirror_count: u32,
-    padding: [f32; 1],
+    pub offset_elem: i32,
+    padding: [f32; 3],
 }
 impl Params {
     pub fn new(
-        mirrors: Vec<cga2d::Blade3>,
+        mirrors: Vec<cga2d::Blade1>,
         edges: Vec<bool>,
         point: cga2d::Blade1,
         scale: [f32; 2],
@@ -327,6 +337,7 @@ impl Params {
         outline_count: usize,
         depth: u32,
         view_settings: &ViewSettings,
+        offset_elem: Point,
     ) -> Self {
         let mirror_count = mirrors.len() as u32;
 
@@ -365,13 +376,14 @@ impl Params {
             depth,
             flags,
             mirror_count,
-            padding: [0.; 1],
+            offset_elem: offset_elem.0 as i32,
+            padding: [0.; 3],
         }
     }
 }
 
-fn rep_mirror(mirror: cga2d::Blade3) -> [f32; 4] {
-    let m = !mirror.normalize();
+fn rep_mirror(mirror: cga2d::Blade1) -> [f32; 4] {
+    let m = mirror.normalize();
     [m.m as f32, m.p as f32, m.x as f32, m.y as f32]
 }
 
@@ -422,7 +434,7 @@ fn get_cut_buffer(camera_transform: cga2d::Rotoflector, puzzle: &ConformalPuzzle
 
 fn get_outline_buffer(
     camera_transform: cga2d::Rotoflector,
-    outlines: &Vec<cga2d::Blade3>,
+    outlines: &Vec<cga2d::Blade1>,
 ) -> Vec<[f32; 4]> {
     outlines
         .iter()

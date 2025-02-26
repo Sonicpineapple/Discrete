@@ -6,26 +6,27 @@ fn angle(x: Option<usize>) -> f64 {
     f64::consts::PI / x.map_or(f64::INFINITY, |x| x as f64)
 }
 
-pub(crate) fn rank_3_mirrors(a: Option<usize>, b: Option<usize>) -> Result<[Blade3; 3], ()> {
+// All mirrors are stored as duals (round points) to track "inside" orientation correctly when transformed
+
+pub(crate) fn rank_3_mirrors(a: Option<usize>, b: Option<usize>) -> Result<[Blade1; 3], ()> {
     let a1 = angle(a);
     let a2 = angle(b);
-    rank_3_mirrors_internal(a1, a2)
+    rank_3_mirrors_internal(a1, a2).map(|ms| ms.map(|m| m.dual()))
 }
 
 pub(crate) fn rank_4_mirrors(
     a: Option<usize>,
     b: Option<usize>,
     c: Option<usize>,
-) -> Result<[Blade3; 4], ()> {
+) -> Result<[Blade1; 4], ()> {
     let a1 = angle(a);
     let a2 = angle(b);
     let a3 = angle(c);
     let [m1, m2, m3] = rank_3_mirrors_internal(a1, a2)?;
     let m4 = rank_4_last_mirror_internal(m1, m2, m3, a1, a2, a3)?;
     // We generate the world "backwards", so invert everyone first
-    let mut mirrors = [m1, m2, m3, m4];
-    mirrors.iter_mut().for_each(|m| *m = -(m4).sandwich(*m));
-    Ok(mirrors)
+    let mirrors = [m1, m2, m3, m4];
+    Ok(mirrors.map(|m| -(m4).sandwich(m).dual()))
 }
 
 fn rank_3_mirrors_internal(a1: f64, a2: f64) -> Result<[Blade3; 3], ()> {

@@ -16,6 +16,7 @@ struct Params {
     depth: u32,
     flags: u32,
     mirror_count: u32,
+    offset_elem: i32,
 }
 
 fn reflect(c: vec4<f32>, p: vec4<f32>) -> vec4<f32> {
@@ -74,8 +75,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var p = up(in.pos.xy);
     var q = params.point;
 
-    var elem = 0;
+    var elem = params.offset_elem;
     var k = 0;
+
     for (var i: u32 = 0u; i < params.depth; i++) {
         var done = true;
         for (var j: u32 = 0u; j < params.mirror_count; j++) {
@@ -123,6 +125,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             mask += u32(1u<<i);
         }
     }
+
     elem = get_sticker(elem, mask);
 
     if (params.flags & 4) > 0 {

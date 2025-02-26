@@ -66,7 +66,7 @@ pub(crate) struct Group {
     point_count: u16,
     generator_count: u8,
     mul_table: HashMap<(Point, Generator), Option<Point>>,
-    pub word_table: Vec<Word>,
+    pub word_table: Vec<Word>, // A word for each element
 }
 impl Group {
     pub fn new(

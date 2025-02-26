@@ -112,12 +112,54 @@ impl Needs {
     }
 }
 
+struct Camera<'a> {
+    rect: egui::Rect,
+    unit: f32,
+    transform: &'a mut Rotoflector,
+    // group_offset: &'a mut Word, // How to get back where we came from after a fundamental region shift
+    group_offset: &'a mut Point, // offset elem to get back
+    boundary_circle: Blade3,
+}
+impl<'a> Camera<'a> {
+    fn new(rect: egui::Rect, transform: &'a mut Rotoflector, group_offset: &'a mut Point) -> Self {
+        let unit = rect.size().min_elem() / 2.;
+        Self {
+            rect,
+            unit,
+            transform,
+            group_offset,
+            boundary_circle: cga2d::circle(cga2d::NO, (rect.size().max_elem() / unit) as f64),
+        }
+    }
+
+    fn screen_to_egui(&self, pos: Pos) -> Pos2 {
+        pos2(pos.x as f32, -pos.y as f32) * self.unit + self.rect.center().to_vec2()
+    }
+    fn egui_to_screen(&self, pos: Pos2) -> Pos {
+        let pos = (pos - self.rect.center().to_vec2()) / self.unit;
+        Pos {
+            x: pos.x as f64,
+            y: -pos.y as f64,
+        }
+    }
+
+    fn egui_to_geom(&self, pos: Pos2) -> Blade1 {
+        let Pos { x, y } = self.egui_to_screen(pos);
+        self.transform.rev().sandwich(cga2d::point(x, y))
+    }
+    fn geom_to_egui(&self, pos: Blade1) -> Pos2 {
+        let (x, y) = self.transform.sandwich(pos).unpack_point();
+        self.screen_to_egui(Pos { x, y })
+    }
+}
+
 struct App {
     settings: Settings,
     tiling: Arc<Tiling>,
     quotient_group: Arc<QuotientGroup>,
     gfx_data: GfxData,
     camera_transform: cga2d::Rotoflector,
+    camera_offset: Point,
     // puzzle_info: PuzzleInfo,
     // puzzle: Puzzle,
     puzzle_editor: Option<PuzzleEditor>,
@@ -131,6 +173,7 @@ impl App {
 
         let settings = Settings::new();
         let camera_transform = cga2d::Rotoflector::ident();
+        let camera_offset = Point::INIT;
 
         let tiling = Arc::new(settings.tiling_settings.generate().unwrap());
         let quotient_group = Arc::new(tiling.get_quotient_group(settings.tile_limit).unwrap());
@@ -142,7 +185,7 @@ impl App {
         let puzzle_def = PuzzleDefinition::new(tiling.clone(), quotient_group.clone());
         let puzzle = puzzle_def.generate_puzzle().unwrap();
         let needs = Needs::new();
-        gfx_data.regenerate_puzzle_buffers(camera_transform, &puzzle);
+        gfx_data.regenerate_puzzle_buffers(&puzzle);
 
         Self {
             settings,
@@ -150,12 +193,393 @@ impl App {
             quotient_group,
             gfx_data,
             camera_transform,
+            camera_offset,
             // puzzle_info,
             puzzle_editor: Some(PuzzleEditor::new(puzzle_def)),
             puzzle: Some(puzzle),
             needs,
             status: Status::Idle,
         }
+    }
+
+    fn draw_settings(&mut self, ui: &mut egui::Ui) {
+        ui.with_layer_id(
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::new("Settings")),
+            |ui| {
+                Frame::popup(ui.style())
+                    .outer_margin(10.)
+                    .shadow(Shadow::NONE)
+                    // .stroke(Stroke::NONE)
+                    .show(ui, |ui| {
+                        CollapsingHeader::new("Settings").show(ui, |ui| {
+                            ui.collapsing("Tiling Settings", |ui| {
+                                ui.horizontal(|ui| {
+                                    self.needs.tiling_regenerate |= ui
+                                        .text_edit_singleline(
+                                            &mut self.settings.tiling_settings.schlafli,
+                                        )
+                                        .changed();
+                                    ui.label(
+                                        RichText::new("■").color(
+                                            match Regex::new(config::SCHLAFLI_PATTERN)
+                                                .unwrap()
+                                                .is_match(&self.settings.tiling_settings.schlafli)
+                                            {
+                                                true => egui::Color32::GREEN,
+                                                false => egui::Color32::RED,
+                                            },
+                                        ),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    if ui.button("+").clicked() {
+                                        self.settings
+                                            .tiling_settings
+                                            .relations
+                                            .push("".to_string());
+                                        self.needs.tiling_regenerate = true;
+                                    }
+                                    if ui.button("-").clicked() {
+                                        self.settings.tiling_settings.relations.pop();
+                                        self.needs.tiling_regenerate = true;
+                                    }
+                                });
+                                for rel in &mut self.settings.tiling_settings.relations {
+                                    self.needs.tiling_regenerate |=
+                                        ui.text_edit_singleline(rel).changed();
+                                }
+                                self.needs.tiling_regenerate |= ui
+                                    .text_edit_singleline(
+                                        &mut self.settings.tiling_settings.subgroup,
+                                    )
+                                    .changed();
+                            });
+                            ui.collapsing("View Settings", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        Slider::new(
+                                            &mut self.settings.view_settings.col_scale,
+                                            0.1..=2.0,
+                                        )
+                                        .logarithmic(true),
+                                    );
+                                    ui.label("Colour Scale");
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(Slider::new(
+                                        &mut self.settings.view_settings.outline_thickness,
+                                        0.0..=1.0,
+                                    ));
+                                    ui.label("Outline Thickness")
+                                });
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.fundamental,
+                                    "Draw fundamental region",
+                                );
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.mirrors,
+                                    "Draw mirrors",
+                                );
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.auto_camera,
+                                    "Automatically move camera reference",
+                                );
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.path_debug,
+                                    "Draw path",
+                                );
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.col_tiles,
+                                    "Colour by quotient",
+                                );
+                                ui.checkbox(
+                                    &mut self.settings.view_settings.inverse_col,
+                                    "Colour by neighbours",
+                                );
+                            });
+                            if let Some(puzzle_editor) = &mut self.puzzle_editor {
+                                ui.collapsing("Puzzle Definition Editor", |ui| {
+                                    for i in 0..puzzle_editor.puzzle_def.piece_types.len() {
+                                        if ui.button(format!("Piece type {}", i)).clicked() {
+                                            puzzle_editor.active_piece_type = Some(i);
+                                        }
+                                    }
+                                    if let Some(piece_type) = puzzle_editor.active_piece_type {
+                                        ui.label(format!("Editing type {}", piece_type));
+                                    }
+                                    if ui.button("+").clicked() {
+                                        puzzle_editor
+                                            .puzzle_def
+                                            .piece_types
+                                            .push(GripSignature::CORE);
+                                    }
+                                    if ui.button("Generate Puzzle").clicked() {
+                                        puzzle_editor.active_piece_type = None;
+                                        self.needs.puzzle_regenerate = true;
+                                        // self.gfx_data.regenerate_cut_buffer(
+                                        //     self.camera_transform,
+                                        //     &puzzle,
+                                        // );
+                                        // self.gfx_data.regenerate_sticker_buffer(&puzzle);
+                                    }
+                                });
+                            }
+                            // if let Some(puzzle) = &mut self.puzzle {
+                            //     ui.collapsing("Puzzle Settings", |ui| {
+                            //         if puzzle.editor.is_none() {
+                            //             if ui.button("Edit").clicked() {
+                            //                 puzzle.set_editor(0);
+                            //             }
+                            //         } else {
+                            //             for i in 0..puzzle.puzzle.piece_types.len() {
+                            //                 if ui
+                            //                     .button(format!("Piece type {}", i))
+                            //                     .clicked()
+                            //                 {
+                            //                     puzzle.set_editor(i);
+                            //                 }
+                            //             }
+                            //             if ui.button("Confirm").clicked() {
+                            //                 puzzle.apply_editor();
+                            //                 self.gfx_data.regenerate_cut_buffer(
+                            //                     self.camera_transform,
+                            //                     &puzzle,
+                            //                 );
+                            //                 self.gfx_data
+                            //                     .regenerate_sticker_buffer(&puzzle);
+                            //             }
+                            //         }
+                            //     });
+                            // }
+
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    Slider::new(&mut self.settings.depth, 1..=100)
+                                        .logarithmic(true),
+                                );
+                                ui.label("Iteration Depth");
+                            });
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        Slider::new(&mut self.settings.tile_limit, 100..=5000)
+                                            .logarithmic(true),
+                                    )
+                                    .changed()
+                                {
+                                    self.needs.tiling_regenerate = true;
+                                };
+                                ui.label("Tile Limit");
+                            });
+
+                            ui.horizontal(|ui| {
+                                if ui.button("Reset Camera").clicked() {
+                                    self.camera_transform = cga2d::Rotoflector::ident();
+                                    self.camera_offset = Point::INIT;
+                                }
+                                self.needs.tiling_regenerate |= ui.button("Regenerate").clicked();
+                            });
+                            ui.label(self.status.message());
+                            if let Some(puzzle) = &self.puzzle {
+                                ui.label(puzzle.puzzle.grip_group.point_count().to_string());
+                            }
+                            // if ui.button("Move").clicked() {
+                            //     if self.puzzle.apply_move(Word(vec![]), 0, false).is_err() {
+                            //         self.status = Status::Invalid
+                            //     } else {
+                            //         self.gfx_data.regenerate_sticker_buffer(&self.puzzle);
+                            //         self.status = Status::Idle
+                            //     };
+                            // }
+                            // for mirror in self
+                            //     .tiling
+                            //     .mirrors
+                            //     .iter()
+                            //     .map(|&m| self.camera_transform.sandwich(m))
+                            // {
+                            //     let new_b = mirror.sandwich(cga2d::circle(NO, 1.));
+                            //     let badness = match new_b.unpack(0.0) {
+                            //         cga2d::LineOrCircle::Line { .. } => f32::INFINITY,
+                            //         cga2d::LineOrCircle::Circle { cx, cy, r } => {
+                            //             ((cx * cx + cy * cy) + r.ln() * r.ln()) as f32
+                            //         }
+                            //     };
+                            //     ui.label(badness.to_string());
+                            // }
+                            // let clicked = ui.button("Go Forth and Boop").clicked();
+                            // let mut trans = cga2d::Rotoflector::ident();
+                            // let mut mirrored = false;
+                            // let mut mirrors: Vec<Blade3> = self
+                            //     .tiling
+                            //     .mirrors
+                            //     .iter()
+                            //     .map(|&m| self.camera_transform.sandwich(m))
+                            //     .collect();
+                            // for _ in 0..10 {
+                            //     let mut badness: f32 = mirrors
+                            //         .iter()
+                            //         .map(|&m| {
+                            //             let new_b = m.sandwich(cga2d::circle(NO, 1.));
+                            //             match new_b.unpack(0.0) {
+                            //                 cga2d::LineOrCircle::Line { .. } => {
+                            //                     f32::INFINITY
+                            //                 }
+                            //                 cga2d::LineOrCircle::Circle { cx, cy, r } => {
+                            //                     ((cx * cx + cy * cy) + r.ln() * r.ln())
+                            //                         as f32
+                            //                 }
+                            //             }
+                            //         })
+                            //         .sum();
+                            //     let mut m_index = None;
+                            //     for (i, mirror) in mirrors.iter().enumerate() {
+                            //         let new_badness = mirrors
+                            //             .iter()
+                            //             .map(|&m| {
+                            //                 let m = mirror.sandwich(m);
+                            //                 let new_b = m.sandwich(cga2d::circle(NO, 1.));
+                            //                 match new_b.unpack(0.0) {
+                            //                     cga2d::LineOrCircle::Line { .. } => {
+                            //                         f32::INFINITY
+                            //                     }
+                            //                     cga2d::LineOrCircle::Circle {
+                            //                         cx,
+                            //                         cy,
+                            //                         r,
+                            //                     } => {
+                            //                         ((cx * cx + cy * cy) + r.ln() * r.ln())
+                            //                             as f32
+                            //                     }
+                            //                 }
+                            //             })
+                            //             .sum();
+                            //         if new_badness < badness {
+                            //             badness = new_badness;
+                            //             m_index = Some(i);
+                            //         }
+                            //     }
+                            //     if let Some(m_index) = m_index {
+                            //         ui.label(m_index.to_string());
+                            //         let mirror = mirrors[m_index];
+                            //         mirrors
+                            //             .iter_mut()
+                            //             .for_each(|m| *m = mirror.sandwich(*m));
+                            //         mirrored = !mirrored;
+                            //         trans = trans * mirror;
+                            //     }
+                            // }
+                            // if mirrored {
+                            //     trans = self.tiling.mirrors[0] * trans;
+                            // }
+                            // if true | clicked {
+                            //     self.camera_transform =
+                            //         (trans * self.camera_transform).normalize();
+                            // }
+                            // // let goodness = self
+                            // //     .tiling
+                            // //     .mirrors
+                            // //     .iter()
+                            // //     .map(|&m| {
+                            // //         let m = self.camera_transform.sandwich(m);
+                            // //         let new_b = m.sandwich(boundary_circle);
+                            // //         match new_b.unpack(0.01) {
+                            // //             cga2d::LineOrCircle::Line { .. } => f32::INFINITY,
+                            // //             cga2d::LineOrCircle::Circle { cx, cy, r } => {
+                            // //                 ((cx * cx + cy * cy) + r.ln() * r.ln()) as f32
+                            // //             }
+                            // //         }
+                            // //     })
+                            // //     .sum();
+                        })
+                    });
+            },
+        );
+    }
+
+    fn update_camera(
+        tiling: &Tiling,
+        ctx: &egui::Context,
+        r: &egui::Response,
+        camera: &mut Camera<'_>,
+    ) {
+        // Scroll zooming
+        if r.hovered() {
+            let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y / camera.unit);
+            if scroll_delta.abs() > 0.001 {
+                let scale = (NO ^ NI).connect(cga2d::point(1. + scroll_delta as f64 / 2., 0.))
+                    * (NO ^ NI).connect(cga2d::point(1., 0.));
+                *camera.transform = scale * *camera.transform;
+                // self.scale = (self.scale - scroll_delta).max(0.1);
+                // unit = size.min_elem() / (2. * self.scale);
+            }
+        }
+        // Camera movement
+        if r.dragged_by(egui::PointerButton::Secondary) {
+            if r.drag_delta().length() > 0.1 {
+                if let Some(mpos) = r.interact_pointer_pos() {
+                    let egui_to_geom = |pos: Pos2| {
+                        let Pos { x, y } = camera.egui_to_screen(pos);
+                        cga2d::point(x, y)
+                    };
+                    let root_pos = egui_to_geom(mpos - r.drag_delta());
+                    let end_pos = egui_to_geom(mpos);
+
+                    let modifiers = ctx.input(|i| i.modifiers);
+
+                    let ms: Vec<cga2d::Blade1> = tiling
+                        .mirrors
+                        .iter()
+                        .map(|&m| camera.transform.sandwich(m))
+                        .collect();
+                    let boundary = match (modifiers.command, modifiers.alt) {
+                        (true, false) => {
+                            let third = if tiling.rank == 4 {
+                                ms[3]
+                            } else {
+                                !(ms[0] ^ ms[1] ^ ms[2])
+                            };
+                            ms[1] ^ ms[2] ^ third
+                        }
+                        (false, true) => {
+                            let third = if tiling.rank == 4 {
+                                ms[3]
+                            } else {
+                                !(ms[0] ^ ms[1] ^ ms[2])
+                            };
+                            ms[0] ^ ms[1] ^ third
+                        }
+                        (true, true) => !cga2d::NI,
+                        _ => ms[0] ^ ms[1] ^ ms[2],
+                    }; // the boundary to fix when transforming space
+
+                    let init_refl = !(root_pos ^ end_pos) ^ !boundary; // get root_pos to end_pos
+                    let f = end_pos ^ !boundary;
+                    let final_refl = !(!init_refl ^ f) ^ f; // restore orientation fixing the "straight line" from root_pos to end_pos
+
+                    *camera.transform = (final_refl * init_refl * *camera.transform).normalize();
+                }
+            }
+        }
+    }
+
+    fn regenerate_tiling(&mut self) {
+        if let Ok(x) = self.settings.tiling_settings.generate() {
+            self.tiling = Arc::new(x);
+            if let Ok(q) = self.tiling.get_quotient_group(self.settings.tile_limit) {
+                self.quotient_group = Arc::new(q);
+                self.puzzle_editor = Some(PuzzleEditor::new(PuzzleDefinition::new(
+                    self.tiling.clone(),
+                    self.quotient_group.clone(),
+                )));
+                self.needs.puzzle_regenerate = true;
+            } else {
+                self.status = Status::Failed;
+            }
+        } else {
+            self.status = Status::Invalid;
+        }
+        self.camera_offset = Point::INIT;
+        self.needs.tiling_regenerate = false;
     }
 }
 impl eframe::App for App {
@@ -164,9 +588,6 @@ impl eframe::App for App {
             .frame(Frame::none())
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
-                let (cen, size) = (rect.center(), rect.size());
-                let unit = size.min_elem() / 2.;
-                let boundary_circle = cga2d::circle(cga2d::NO, (size.max_elem() / unit) as f64);
 
                 // Allocate space in the UI.
                 let (egui_rect, target_size) =
@@ -178,302 +599,7 @@ impl eframe::App for App {
                 ));
 
                 // Settings menu
-                ui.with_layer_id(
-                    egui::LayerId::new(egui::Order::Foreground, egui::Id::new("Settings")),
-                    |ui| {
-                        Frame::popup(ui.style())
-                            .outer_margin(10.)
-                            .shadow(Shadow::NONE)
-                            // .stroke(Stroke::NONE)
-                            .show(ui, |ui| {
-                                CollapsingHeader::new("Settings").show(ui, |ui| {
-                                    ui.collapsing("Tiling Settings", |ui| {
-                                        ui.horizontal(|ui| {
-                                            self.needs.tiling_regenerate |= ui
-                                                .text_edit_singleline(
-                                                    &mut self.settings.tiling_settings.schlafli,
-                                                )
-                                                .changed();
-                                            ui.label(
-                                                RichText::new("■").color(
-                                                    match Regex::new(config::SCHLAFLI_PATTERN)
-                                                        .unwrap()
-                                                        .is_match(
-                                                            &self.settings.tiling_settings.schlafli,
-                                                        ) {
-                                                        true => egui::Color32::GREEN,
-                                                        false => egui::Color32::RED,
-                                                    },
-                                                ),
-                                            );
-                                        });
-                                        ui.horizontal(|ui| {
-                                            if ui.button("+").clicked() {
-                                                self.settings
-                                                    .tiling_settings
-                                                    .relations
-                                                    .push("".to_string());
-                                                self.needs.tiling_regenerate = true;
-                                            }
-                                            if ui.button("-").clicked() {
-                                                self.settings.tiling_settings.relations.pop();
-                                                self.needs.tiling_regenerate = true;
-                                            }
-                                        });
-                                        for rel in &mut self.settings.tiling_settings.relations {
-                                            self.needs.tiling_regenerate |=
-                                                ui.text_edit_singleline(rel).changed();
-                                        }
-                                        self.needs.tiling_regenerate |= ui
-                                            .text_edit_singleline(
-                                                &mut self.settings.tiling_settings.subgroup,
-                                            )
-                                            .changed();
-                                    });
-                                    ui.collapsing("View Settings", |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.add(
-                                                Slider::new(
-                                                    &mut self.settings.view_settings.col_scale,
-                                                    0.1..=2.0,
-                                                )
-                                                .logarithmic(true),
-                                            );
-                                            ui.label("Colour Scale");
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.add(Slider::new(
-                                                &mut self.settings.view_settings.outline_thickness,
-                                                0.0..=1.0,
-                                            ));
-                                            ui.label("Outline Thickness")
-                                        });
-                                        ui.checkbox(
-                                            &mut self.settings.view_settings.fundamental,
-                                            "Draw fundamental region",
-                                        );
-                                        ui.checkbox(
-                                            &mut self.settings.view_settings.mirrors,
-                                            "Draw mirrors",
-                                        );
-                                        ui.checkbox(
-                                            &mut self.settings.view_settings.path_debug,
-                                            "Draw path",
-                                        );
-                                        ui.checkbox(
-                                            &mut self.settings.view_settings.col_tiles,
-                                            "Colour by quotient",
-                                        );
-                                        ui.checkbox(
-                                            &mut self.settings.view_settings.inverse_col,
-                                            "Colour by neighbours",
-                                        );
-                                    });
-                                    if let Some(puzzle_editor) = &mut self.puzzle_editor {
-                                        ui.collapsing("Puzzle Definition Editor", |ui| {
-                                            for i in 0..puzzle_editor.puzzle_def.piece_types.len() {
-                                                if ui.button(format!("Piece type {}", i)).clicked()
-                                                {
-                                                    puzzle_editor.active_piece_type = Some(i);
-                                                }
-                                            }
-                                            if let Some(piece_type) =
-                                                puzzle_editor.active_piece_type
-                                            {
-                                                ui.label(format!("Editing type {}", piece_type));
-                                            }
-                                            if ui.button("+").clicked() {
-                                                puzzle_editor
-                                                    .puzzle_def
-                                                    .piece_types
-                                                    .push(GripSignature::CORE);
-                                            }
-                                            if ui.button("Generate Puzzle").clicked() {
-                                                puzzle_editor.active_piece_type = None;
-                                                self.needs.puzzle_regenerate = true;
-                                                // self.gfx_data.regenerate_cut_buffer(
-                                                //     self.camera_transform,
-                                                //     &puzzle,
-                                                // );
-                                                // self.gfx_data.regenerate_sticker_buffer(&puzzle);
-                                            }
-                                        });
-                                    }
-                                    // if let Some(puzzle) = &mut self.puzzle {
-                                    //     ui.collapsing("Puzzle Settings", |ui| {
-                                    //         if puzzle.editor.is_none() {
-                                    //             if ui.button("Edit").clicked() {
-                                    //                 puzzle.set_editor(0);
-                                    //             }
-                                    //         } else {
-                                    //             for i in 0..puzzle.puzzle.piece_types.len() {
-                                    //                 if ui
-                                    //                     .button(format!("Piece type {}", i))
-                                    //                     .clicked()
-                                    //                 {
-                                    //                     puzzle.set_editor(i);
-                                    //                 }
-                                    //             }
-                                    //             if ui.button("Confirm").clicked() {
-                                    //                 puzzle.apply_editor();
-                                    //                 self.gfx_data.regenerate_cut_buffer(
-                                    //                     self.camera_transform,
-                                    //                     &puzzle,
-                                    //                 );
-                                    //                 self.gfx_data
-                                    //                     .regenerate_sticker_buffer(&puzzle);
-                                    //             }
-                                    //         }
-                                    //     });
-                                    // }
-
-                                    ui.horizontal(|ui| {
-                                        ui.add(
-                                            Slider::new(&mut self.settings.depth, 1..=100)
-                                                .logarithmic(true),
-                                        );
-                                        ui.label("Iteration Depth");
-                                    });
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .add(
-                                                Slider::new(
-                                                    &mut self.settings.tile_limit,
-                                                    100..=5000,
-                                                )
-                                                .logarithmic(true),
-                                            )
-                                            .changed()
-                                        {
-                                            self.needs.tiling_regenerate = true;
-                                        };
-                                        ui.label("Tile Limit");
-                                    });
-
-                                    ui.horizontal(|ui| {
-                                        if ui.button("Reset Camera").clicked() {
-                                            self.camera_transform = cga2d::Rotoflector::ident();
-                                        }
-                                        self.needs.tiling_regenerate |=
-                                            ui.button("Regenerate").clicked();
-                                    });
-                                    ui.label(self.status.message());
-                                    if let Some(puzzle) = &self.puzzle {
-                                        ui.label(
-                                            puzzle.puzzle.grip_group.point_count().to_string(),
-                                        );
-                                    }
-                                    // if ui.button("Move").clicked() {
-                                    //     if self.puzzle.apply_move(Word(vec![]), 0, false).is_err() {
-                                    //         self.status = Status::Invalid
-                                    //     } else {
-                                    //         self.gfx_data.regenerate_sticker_buffer(&self.puzzle);
-                                    //         self.status = Status::Idle
-                                    //     };
-                                    // }
-                                    // for mirror in self
-                                    //     .tiling
-                                    //     .mirrors
-                                    //     .iter()
-                                    //     .map(|&m| self.camera_transform.sandwich(m))
-                                    // {
-                                    //     let new_b = mirror.sandwich(cga2d::circle(NO, 1.));
-                                    //     let badness = match new_b.unpack(0.0) {
-                                    //         cga2d::LineOrCircle::Line { .. } => f32::INFINITY,
-                                    //         cga2d::LineOrCircle::Circle { cx, cy, r } => {
-                                    //             ((cx * cx + cy * cy) + r.ln() * r.ln()) as f32
-                                    //         }
-                                    //     };
-                                    //     ui.label(badness.to_string());
-                                    // }
-                                    // let clicked = ui.button("Go Forth and Boop").clicked();
-                                    // let mut trans = cga2d::Rotoflector::ident();
-                                    // let mut mirrored = false;
-                                    // let mut mirrors: Vec<Blade3> = self
-                                    //     .tiling
-                                    //     .mirrors
-                                    //     .iter()
-                                    //     .map(|&m| self.camera_transform.sandwich(m))
-                                    //     .collect();
-                                    // for _ in 0..10 {
-                                    //     let mut badness: f32 = mirrors
-                                    //         .iter()
-                                    //         .map(|&m| {
-                                    //             let new_b = m.sandwich(cga2d::circle(NO, 1.));
-                                    //             match new_b.unpack(0.0) {
-                                    //                 cga2d::LineOrCircle::Line { .. } => {
-                                    //                     f32::INFINITY
-                                    //                 }
-                                    //                 cga2d::LineOrCircle::Circle { cx, cy, r } => {
-                                    //                     ((cx * cx + cy * cy) + r.ln() * r.ln())
-                                    //                         as f32
-                                    //                 }
-                                    //             }
-                                    //         })
-                                    //         .sum();
-                                    //     let mut m_index = None;
-                                    //     for (i, mirror) in mirrors.iter().enumerate() {
-                                    //         let new_badness = mirrors
-                                    //             .iter()
-                                    //             .map(|&m| {
-                                    //                 let m = mirror.sandwich(m);
-                                    //                 let new_b = m.sandwich(cga2d::circle(NO, 1.));
-                                    //                 match new_b.unpack(0.0) {
-                                    //                     cga2d::LineOrCircle::Line { .. } => {
-                                    //                         f32::INFINITY
-                                    //                     }
-                                    //                     cga2d::LineOrCircle::Circle {
-                                    //                         cx,
-                                    //                         cy,
-                                    //                         r,
-                                    //                     } => {
-                                    //                         ((cx * cx + cy * cy) + r.ln() * r.ln())
-                                    //                             as f32
-                                    //                     }
-                                    //                 }
-                                    //             })
-                                    //             .sum();
-                                    //         if new_badness < badness {
-                                    //             badness = new_badness;
-                                    //             m_index = Some(i);
-                                    //         }
-                                    //     }
-                                    //     if let Some(m_index) = m_index {
-                                    //         ui.label(m_index.to_string());
-                                    //         let mirror = mirrors[m_index];
-                                    //         mirrors
-                                    //             .iter_mut()
-                                    //             .for_each(|m| *m = mirror.sandwich(*m));
-                                    //         mirrored = !mirrored;
-                                    //         trans = trans * mirror;
-                                    //     }
-                                    // }
-                                    // if mirrored {
-                                    //     trans = self.tiling.mirrors[0] * trans;
-                                    // }
-                                    // if true | clicked {
-                                    //     self.camera_transform =
-                                    //         (trans * self.camera_transform).normalize();
-                                    // }
-                                    // // let goodness = self
-                                    // //     .tiling
-                                    // //     .mirrors
-                                    // //     .iter()
-                                    // //     .map(|&m| {
-                                    // //         let m = self.camera_transform.sandwich(m);
-                                    // //         let new_b = m.sandwich(boundary_circle);
-                                    // //         match new_b.unpack(0.01) {
-                                    // //             cga2d::LineOrCircle::Line { .. } => f32::INFINITY,
-                                    // //             cga2d::LineOrCircle::Circle { cx, cy, r } => {
-                                    // //                 ((cx * cx + cy * cy) + r.ln() * r.ln()) as f32
-                                    // //             }
-                                    // //         }
-                                    // //     })
-                                    // //     .sum();
-                                })
-                            });
-                    },
-                );
+                self.draw_settings(ui);
 
                 let r = ui.interact(
                     egui_rect,
@@ -484,98 +610,27 @@ impl eframe::App for App {
                 let scale = egui_rect.size() / (1. * egui_rect.size().min_elem());
                 let scale = [scale.x, scale.y];
 
-                let screen_to_egui =
-                    |pos: Pos| pos2(pos.x as f32, -pos.y as f32) * unit + cen.to_vec2();
-                let egui_to_screen = |pos: Pos2| {
-                    let pos = (pos - cen.to_vec2()) / unit;
-                    Pos {
-                        x: pos.x as f64,
-                        y: -pos.y as f64,
-                    }
-                };
-
-                // Scroll zooming
-                if r.hovered() {
-                    let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y / unit);
-                    if scroll_delta.abs() > 0.001 {
-                        let scale = (NO ^ NI)
-                            .connect(cga2d::point(1. + scroll_delta as f64 / 2., 0.))
-                            * (NO ^ NI).connect(cga2d::point(1., 0.));
-                        self.camera_transform = scale * self.camera_transform;
-                        // self.scale = (self.scale - scroll_delta).max(0.1);
-                        // unit = size.min_elem() / (2. * self.scale);
-                    }
-                }
-                // Camera movement
-                if r.dragged_by(egui::PointerButton::Secondary) {
-                    if r.drag_delta().length() > 0.1 {
-                        if let Some(mpos) = r.interact_pointer_pos() {
-                            let egui_to_geom = |pos: Pos2| {
-                                let Pos { x, y } = egui_to_screen(pos);
-                                cga2d::point(x, y)
-                            };
-                            let root_pos = egui_to_geom(mpos - r.drag_delta());
-                            let end_pos = egui_to_geom(mpos);
-
-                            let modifiers = ctx.input(|i| i.modifiers);
-
-                            let ms: Vec<cga2d::Blade3> = self
-                                .tiling
-                                .mirrors
-                                .iter()
-                                .map(|&m| self.camera_transform.sandwich(m))
-                                .collect();
-                            let boundary = match (modifiers.command, modifiers.alt) {
-                                (true, false) => {
-                                    let third = if self.tiling.rank == 4 {
-                                        !ms[3]
-                                    } else {
-                                        !(!ms[0] ^ !ms[1] ^ !ms[2])
-                                    };
-                                    !ms[1] ^ !ms[2] ^ third
-                                }
-                                (false, true) => {
-                                    let third = if self.tiling.rank == 4 {
-                                        !ms[3]
-                                    } else {
-                                        !(!ms[0] ^ !ms[1] ^ !ms[2])
-                                    };
-                                    !ms[0] ^ !ms[1] ^ third
-                                }
-                                (true, true) => !cga2d::NI,
-                                _ => !ms[0] ^ !ms[1] ^ !ms[2],
-                            }; // the boundary to fix when transforming space
-
-                            let init_refl = !(root_pos ^ end_pos) ^ !boundary; // get root_pos to end_pos
-                            let f = end_pos ^ !boundary;
-                            let final_refl = !(!init_refl ^ f) ^ f; // restore orientation fixing the "straight line" from root_pos to end_pos
-
-                            self.camera_transform =
-                                (final_refl * init_refl * self.camera_transform).normalize();
-                        }
-                    }
+                if self.needs.tiling_regenerate {
+                    self.regenerate_tiling();
                 }
 
-                let camera_transform = self.camera_transform;
-                let egui_to_geom = |pos: Pos2| {
-                    let Pos { x, y } = egui_to_screen(pos);
-                    camera_transform.rev().sandwich(cga2d::point(x, y))
-                };
-                let geom_to_egui = |pos: cga2d::Blade1| {
-                    let (x, y) = camera_transform.sandwich(pos).unpack_point();
-                    screen_to_egui(Pos { x, y })
-                };
+                let mut camera =
+                    Camera::new(rect, &mut self.camera_transform, &mut self.camera_offset);
+
+                Self::update_camera(&self.tiling, ctx, &r, &mut camera);
+
                 // Move fundamental region to avoid noise
                 if r.middle_clicked() {
                     if let Some(mpos) = ctx.pointer_latest_pos() {
-                        let mut seed = egui_to_geom(mpos);
+                        let mut seed = camera.egui_to_geom(mpos);
                         let mut word = Word(vec![]);
                         let mut trans = cga2d::Rotoflector::ident();
                         let mut mirrored = false;
+                        let mut done = true;
                         for _ in 0..self.settings.depth {
-                            let mut done = true;
+                            // for _ in 0..1 {
                             for (i, &mirror) in self.tiling.mirrors.iter().enumerate() {
-                                if !(mirror ^ seed) < 0. {
+                                if !(mirror.antidual() ^ seed) < 0. {
                                     let new_seed = mirror.sandwich(seed);
                                     seed = new_seed;
                                     done = false;
@@ -588,87 +643,137 @@ impl eframe::App for App {
                                 break;
                             }
                         }
-                        if !mirrored {
-                            self.camera_transform = (self.camera_transform * trans).normalize();
+                        if true || !mirrored {
+                            *camera.transform = (*camera.transform * trans).normalize();
+                            *camera.group_offset = self
+                                .quotient_group
+                                .element_group
+                                .mul_word(camera.group_offset, &word)
+                                .expect("oh no, anyway");
                         }
+                    }
+                }
+                if self.settings.view_settings.auto_camera {
+                    let r = (camera.rect.size().max_elem() / camera.unit) as f64;
+                    let mut seeds = [(0., 0.), (0., r), (r, 0.), (0., -r), (-r, 0.)]
+                        .map(|(x, y)| camera.transform.inv().sandwich(cga2d::point(x, y)));
+                    let mut word = Word(vec![]);
+                    let mut trans = cga2d::Rotoflector::ident();
+                    let mut mirrored = false;
+                    let mut done = true;
+                    for _ in 0..self.settings.depth {
+                        for (i, &mirror) in self.tiling.mirrors.iter().enumerate() {
+                            if seeds
+                                .iter()
+                                .fold(0., |a, &seed| a + ((!(mirror.antidual() ^ seed)).signum()))
+                                <= -3.
+                            // -1 means the mirror does not contain the point
+                            {
+                                seeds = seeds.map(|seed| mirror.sandwich(seed));
+                                done = false;
+                                word = word * Generator(i as u8);
+                                trans = trans * mirror;
+                                mirrored = !mirrored;
+                            }
+                        }
+                        if done {
+                            break;
+                        }
+                    }
+                    if true || !mirrored {
+                        *camera.transform = (*camera.transform * trans).normalize();
+                        *camera.group_offset = self
+                            .quotient_group
+                            .element_group
+                            .mul_word(camera.group_offset, &word)
+                            .expect("oh no, anyway");
                     }
                 }
 
-                if self.needs.tiling_regenerate {
-                    if let Ok(x) = self.settings.tiling_settings.generate() {
-                        self.tiling = Arc::new(x);
-                        if let Ok(q) = self.tiling.get_quotient_group(self.settings.tile_limit) {
-                            self.quotient_group = Arc::new(q);
-                            self.puzzle_editor = Some(PuzzleEditor::new(PuzzleDefinition::new(
-                                self.tiling.clone(),
-                                self.quotient_group.clone(),
-                            )));
-                            self.needs.puzzle_regenerate = true;
-                        } else {
-                            self.status = Status::Failed;
-                        }
-                    } else {
-                        self.status = Status::Invalid;
-                    }
-                    self.needs.tiling_regenerate = false;
-                }
                 if self.needs.puzzle_regenerate {
                     if let Some(puzzle_editor) = &self.puzzle_editor {
                         if let Ok(puzzle) = puzzle_editor.puzzle_def.generate_puzzle() {
                             self.puzzle = Some(puzzle);
                             self.status = Status::Generated;
-                            self.gfx_data.regenerate_puzzle_buffers(
-                                self.camera_transform,
-                                self.puzzle.as_ref().unwrap(),
-                            );
+                            self.gfx_data
+                                .regenerate_puzzle_buffers(self.puzzle.as_ref().unwrap());
                         } else {
                             self.status = Status::Failed;
                         };
                     }
                     self.needs.puzzle_regenerate = false;
                 }
-                if let Some(puzzle) = &self.puzzle {
-                    self.gfx_data
-                        .regenerate_cut_buffer(self.camera_transform, puzzle);
-                }
                 let mut outlines = vec![];
                 let mirrors = &self.tiling.mirrors;
-                let b_cell = !mirrors[0] ^ !mirrors[1] ^ !mirrors[2];
-                if b_cell.mag2() > 0. {
-                    let bp = b_cell & mirrors[2];
-                    outlines.push(cga2d::slerp(
-                        -mirrors[2],
-                        bp ^ (b_cell.mag2().signum() * mirrors[0] & mirrors[1])
-                            .unpack_point_pair()
-                            .unwrap()[0],
-                        std::f64::consts::PI / 2.
-                            * self.settings.view_settings.outline_thickness as f64,
-                    ));
+                match self.tiling.rank {
+                    3 => {
+                        let b = mirrors[0] ^ mirrors[1] ^ mirrors[2];
+                        let bp = b & !mirrors[2];
+                        outlines.push(-cga2d::slerp(
+                            mirrors[2],
+                            !(bp ^ (!(mirrors[0] ^ mirrors[1])).unpack_point_pair().unwrap()[0]),
+                            std::f64::consts::PI / 2.
+                                * self.settings.view_settings.outline_thickness as f64,
+                        ));
+                        outlines.push(cga2d::slerp(
+                            -mirrors[2],
+                            !(bp ^ (!(mirrors[0] ^ mirrors[1])).unpack_point_pair().unwrap()[1]),
+                            std::f64::consts::PI / 2.
+                                * self.settings.view_settings.outline_thickness as f64,
+                        ));
+                    }
+                    4 => {
+                        let b_cell = mirrors[0] ^ mirrors[1] ^ mirrors[2];
+                        if b_cell.mag2() > 0. {
+                            let bp = b_cell & !mirrors[2];
+                            outlines.push(-cga2d::slerp(
+                                mirrors[2],
+                                !(bp ^ (!(b_cell.mag2().signum() * mirrors[0] ^ mirrors[1]))
+                                    .unpack_point_pair()
+                                    .unwrap()[0]),
+                                std::f64::consts::PI / 2.
+                                    * self.settings.view_settings.outline_thickness as f64,
+                            ));
+                        }
+                        let b_vert = mirrors[1] ^ mirrors[2] ^ mirrors[3];
+                        if b_vert.mag2() > 0. {
+                            let bp = b_vert & !mirrors[3];
+                            outlines.push(cga2d::slerp(
+                                -mirrors[3],
+                                !(bp ^ (!(b_vert.mag2().signum() * mirrors[1] ^ mirrors[2]))
+                                    .unpack_point_pair()
+                                    .unwrap()[1]),
+                                std::f64::consts::PI / 2.
+                                    * self.settings.view_settings.outline_thickness as f64,
+                            ));
+                        }
+                    }
+                    _ => todo!(),
                 }
-                let b_vert = !mirrors[1] ^ !mirrors[2] ^ !mirrors[3];
-                if b_vert.mag2() > 0. {
-                    let bp = b_vert & mirrors[3];
-                    outlines.push(-cga2d::slerp(
-                        mirrors[3],
-                        bp ^ (b_vert.mag2().signum() * mirrors[1] & mirrors[2])
-                            .unpack_point_pair()
-                            .unwrap()[1],
-                        std::f64::consts::PI / 2.
-                            * self.settings.view_settings.outline_thickness as f64,
-                    ));
-                }
-                self.gfx_data
-                    .regenerate_outline_buffer(camera_transform, &outlines);
+
+                ui.with_layer_id(
+                    egui::LayerId::new(egui::Order::Foreground, egui::Id::new("LMAO")),
+                    |ui| {
+                        Frame::popup(ui.style())
+                            .outer_margin(10.)
+                            .shadow(Shadow::NONE)
+                            // .stroke(Stroke::NONE)
+                            .show(ui, |ui| {
+                                ui.label(format!("{:?}", camera.group_offset));
+                            })
+                    },
+                );
+
                 self.gfx_data.frame(
                     gfx::Params::new(
                         self.tiling
                             .mirrors
                             .iter()
-                            .map(|&m| self.camera_transform.sandwich(m))
+                            .map(|&m| camera.transform.sandwich(m))
                             .collect(),
                         self.tiling.edges.clone(),
                         if let Some(mpos) = ctx.pointer_latest_pos() {
-                            egui_to_geom(mpos)
+                            camera.egui_to_geom(mpos)
                         } else {
                             cga2d::point(0., 1.)
                         },
@@ -681,9 +786,14 @@ impl eframe::App for App {
                         outlines.len(),
                         self.settings.depth,
                         &self.settings.view_settings,
+                        *camera.group_offset,
                     ),
                     target_size[0],
                     target_size[1],
+                    *camera.transform,
+                    // camera.group_offset.clone(),
+                    &self.puzzle,
+                    &outlines,
                 );
                 ui.with_layer_id(egui::LayerId::background(), |ui| {
                     image.paint_at(ui, egui_rect);
@@ -712,93 +822,55 @@ impl eframe::App for App {
                 ];
                 let stroke_width = 1.;
 
-                let draw_circle = |mirror: cga2d::Blade3, col_index, stroke_width: f32| {
-                    // Find the point pair where the mirror intersects the visible region.
-                    let pp = mirror & boundary_circle;
-                    if let Some(_) = pp.unpack_point_pair() {
-                        let mid = pp.sandwich(cga2d::NI);
-                        let perpendicular_pp = pp.connect(mid) & mirror;
-
-                        // Sample points uniformly along the mirror.
-                        const CURVE_SAMPLE_COUNT: usize = 200;
-                        let points = (0..=CURVE_SAMPLE_COUNT)
-                            .filter_map(|i| {
-                                // Interpolate along a straight line.
-                                let t = i as f64 / CURVE_SAMPLE_COUNT as f64;
-                                let [sample_point, _] =
-                                    cga2d::slerp(pp, perpendicular_pp, t * std::f64::consts::PI)
-                                        .unpack_point_pair()?;
-                                Some(sample_point.unpack_point())
-                            })
-                            .map(|(x, y)| screen_to_egui(Pos { x, y }))
-                            .collect();
-                        ui.painter().add(PathShape {
-                            points,
-                            closed: false,
-                            fill: Color32::TRANSPARENT,
-                            stroke: (stroke_width, cols[col_index]).into(),
-                        });
-                    } else {
-                        match mirror.unpack(0.001) {
-                            cga2d::LineOrCircle::Line { .. } => (), // does not intersect view
-                            cga2d::LineOrCircle::Circle { cx, cy, r } => {
-                                ui.painter().circle_stroke(
-                                    screen_to_egui(Pos::new(cx, cy)),
-                                    (r * unit as f64) as _,
-                                    (stroke_width, cols[col_index]),
-                                );
-                            }
-                        }
-                    }
+                let draw_circle = |mirror, i, stroke_width| {
+                    draw_circle(ui, &camera, mirror, cols[i], stroke_width)
                 };
                 if self.settings.view_settings.mirrors {
                     for (i, mirror) in self
                         .tiling
                         .mirrors
                         .iter()
-                        .map(|&m| self.camera_transform.sandwich(m))
+                        .map(|&m| camera.transform.sandwich(m))
                         .enumerate()
                     {
-                        draw_circle(mirror, i, stroke_width);
+                        draw_circle(!mirror, i, stroke_width);
                     }
                 }
                 if let Some(puzzle_editor) = &self.puzzle_editor {
                     if let Some(active_piece_type) = puzzle_editor.active_piece_type {
                         let stroke_width = 3.;
                         let circ = if self.tiling.rank == 3 {
-                            !self.tiling.mirrors[0]
-                                ^ !self.tiling.mirrors[1]
-                                ^ cga2d::point(0.3, 0.)
+                            self.tiling.mirrors[0] ^ self.tiling.mirrors[1] ^ cga2d::point(0.3, 0.)
                         } else {
-                            !self.tiling.mirrors[0]
-                                ^ !self.tiling.mirrors[1]
-                                ^ !self.tiling.mirrors[2]
+                            self.tiling.mirrors[0] ^ self.tiling.mirrors[1] ^ self.tiling.mirrors[2]
                         };
                         for grip in &puzzle_editor.puzzle_def.piece_types[active_piece_type].0 {
                             let word = &self.quotient_group.tile_group.word_table[grip.0 as usize];
                             draw_circle(
-                                self.camera_transform
-                                    .sandwich(word.0.iter().fold(circ, |c, g| {
-                                        self.tiling.mirrors[g.0 as usize].sandwich(c)
-                                    })),
+                                camera.transform.sandwich(word.0.iter().fold(circ, |c, g| {
+                                    self.tiling.mirrors[g.0 as usize].sandwich(c)
+                                })),
                                 5,
                                 stroke_width,
                             );
                         }
-                        for cut in &puzzle_editor.puzzle_def.cut_circles {
-                            draw_circle(self.camera_transform.sandwich(*cut), 4, stroke_width);
+                        for &cut in &puzzle_editor.puzzle_def.cut_circles {
+                            draw_circle(camera.transform.sandwich(!cut), 4, stroke_width);
                         }
                     }
                 };
 
                 if r.is_pointer_button_down_on() {
                     if let Some(mpos) = ctx.pointer_latest_pos() {
-                        let mut seed = egui_to_geom(mpos);
+                        let mut seed = camera.egui_to_geom(mpos);
 
                         // Fill regions
                         if ui.input(|i| i.pointer.primary_down()) {
-                            ui.painter()
-                                .circle_filled(geom_to_egui(seed), 5., egui::Color32::GRAY);
+                            ui.painter().circle_filled(
+                                camera.geom_to_egui(seed),
+                                5.,
+                                egui::Color32::GRAY,
+                            );
                             // for (i, &mirror) in self.tiling.mirrors.iter().enumerate() {
                             //     if !(mirror ^ seed) < 0. {
                             //         ui.painter().circle_filled(
@@ -810,22 +882,25 @@ impl eframe::App for App {
                             // }
 
                             let mut word = Word(vec![]);
-                            let circ = !self.tiling.mirrors[0]
-                                ^ !self.tiling.mirrors[1]
-                                ^ !self.tiling.mirrors[2];
+                            let circ = self.tiling.mirrors[0]
+                                ^ self.tiling.mirrors[1]
+                                ^ self.tiling.mirrors[2];
                             let mut mirrored = false;
                             for _ in 0..self.settings.depth {
                                 let mut done = true;
                                 for (i, &mirror) in self.tiling.mirrors.iter().enumerate() {
-                                    if !(mirror ^ seed) < 0. {
+                                    if !(mirror.antidual() ^ seed) < 0. {
                                         let new_seed = mirror.sandwich(seed);
                                         if self.settings.view_settings.path_debug {
                                             ui.painter().line_segment(
-                                                [geom_to_egui(seed), geom_to_egui(new_seed)],
+                                                [
+                                                    camera.geom_to_egui(seed),
+                                                    camera.geom_to_egui(new_seed),
+                                                ],
                                                 (3., cols[i]),
                                             );
                                             ui.painter().circle_filled(
-                                                geom_to_egui(new_seed),
+                                                camera.geom_to_egui(new_seed),
                                                 5.,
                                                 egui::Color32::LIGHT_GRAY,
                                             );
@@ -841,7 +916,7 @@ impl eframe::App for App {
                                 }
                             }
                             draw_circle(
-                                self.camera_transform.sandwich(
+                                camera.transform.sandwich(
                                     word.inverse().0.iter().fold(circ, |c, g| {
                                         self.tiling.mirrors[g.0 as usize].sandwich(c)
                                     }),
@@ -888,7 +963,19 @@ impl eframe::App for App {
                                         }
                                     } else {
                                         if let Some(puzzle) = &mut self.puzzle {
-                                            if puzzle.apply_move(word, 0, false).is_err() {
+                                            let offset_word =
+                                                self.quotient_group.element_group.word_table
+                                                    [camera.group_offset.0 as usize]
+                                                    .clone();
+                                            if puzzle
+                                                .apply_move(
+                                                    offset_word.clone() * word,
+                                                    0,
+                                                    // offset_word.0.len() % 2 == 1,
+                                                    false,
+                                                )
+                                                .is_err()
+                                            {
                                                 self.status = Status::Invalid
                                             } else {
                                                 self.gfx_data.regenerate_sticker_buffer(&puzzle);
@@ -902,6 +989,52 @@ impl eframe::App for App {
                     }
                 }
             });
+    }
+}
+
+fn draw_circle(
+    ui: &egui::Ui,
+    camera: &Camera<'_>,
+    mirror: cga2d::Blade3,
+    col: Color32,
+    stroke_width: f32,
+) {
+    // Find the point pair where the mirror intersects the visible region.
+    let pp = mirror & camera.boundary_circle;
+    if let Some(_) = pp.unpack_point_pair() {
+        let mid = pp.sandwich(cga2d::NI);
+        let perpendicular_pp = pp.connect(mid) & mirror;
+
+        // Sample points uniformly along the mirror.
+        const CURVE_SAMPLE_COUNT: usize = 200;
+        let points = (0..=CURVE_SAMPLE_COUNT)
+            .filter_map(|i| {
+                // Interpolate along a straight line.
+                let t = i as f64 / CURVE_SAMPLE_COUNT as f64;
+                let [sample_point, _] =
+                    cga2d::slerp(pp, perpendicular_pp, t * std::f64::consts::PI)
+                        .unpack_point_pair()?;
+                Some(sample_point.unpack_point())
+            })
+            .map(|(x, y)| camera.screen_to_egui(Pos { x, y }))
+            .collect();
+        ui.painter().add(PathShape {
+            points,
+            closed: false,
+            fill: Color32::TRANSPARENT,
+            stroke: (stroke_width, col).into(),
+        });
+    } else {
+        match mirror.unpack(0.001) {
+            cga2d::LineOrCircle::Line { .. } => (), // does not intersect view
+            cga2d::LineOrCircle::Circle { cx, cy, r } => {
+                ui.painter().circle_stroke(
+                    camera.screen_to_egui(Pos::new(cx, cy)),
+                    (r * camera.unit as f64) as _,
+                    (stroke_width, col),
+                );
+            }
+        }
     }
 }
 

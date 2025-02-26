@@ -9,7 +9,6 @@ cga2d = { version = "0.4.0", features = ["bytemuck"] }
 eframe = { version = "0.28.1", default-features = false, features = ["accesskit", "default_fonts", "wayland", "web_screen_reader", "wgpu", "x11"] }
 log = "0.4"
 regex = "1.10.6"
-wgpu = { version = "*", features = ["webgpu", "webgl"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

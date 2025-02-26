@@ -66,6 +66,7 @@ pub(crate) struct ViewSettings {
     pub col_scale: f32,
     pub fundamental: bool,
     pub mirrors: bool,
+    pub auto_camera: bool,
     pub path_debug: bool,
     pub col_tiles: bool,
     pub inverse_col: bool,
@@ -77,10 +78,11 @@ impl ViewSettings {
             col_scale: 1.,
             fundamental: true,
             mirrors: true,
+            auto_camera: false,
             path_debug: true,
             col_tiles: false,
             inverse_col: false,
-            outline_thickness: 0.5,
+            outline_thickness: 0.1,
         }
     }
 }
@@ -157,7 +159,7 @@ impl Schlafli {
         rels
     }
 
-    pub fn get_mirrors(&self) -> Result<Vec<cga2d::Blade3>, ()> {
+    pub fn get_mirrors(&self) -> Result<Vec<cga2d::Blade1>, ()> {
         Ok(match self.rank() {
             3 => rank_3_mirrors(self.0[0], self.0[1])?.to_vec(),
             4 => rank_4_mirrors(self.0[0], self.0[1], self.0[2])?.to_vec(),

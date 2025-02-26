@@ -10,7 +10,7 @@ use crate::{
 pub(crate) struct Tiling {
     pub rank: u8,
     pub schlafli: Schlafli,
-    pub mirrors: Vec<cga2d::Blade3>,
+    pub mirrors: Vec<cga2d::Blade1>,
     pub edges: Vec<bool>,
 
     pub relations: Vec<Vec<u8>>,
