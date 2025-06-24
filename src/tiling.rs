@@ -33,7 +33,7 @@ impl Tiling {
         let subgroup = parse_subgroup(&tiling_settings.subgroup)?
             .iter()
             .map(|&x| if x <= schlafli.rank() { Ok(x) } else { Err(()) })
-            .collect::<Result<_, ()>>()?;
+            .collect::<Result<Vec<_>, ()>>()?;
 
         let mut edges = vec![true; 4];
         for &i in &subgroup {
